@@ -26,7 +26,7 @@ from tianji.protocol import verify_frame
 
 def _collect_ccsniff_rows() -> list:
     r = subprocess.run(
-        ["npx.cmd", "--yes", "ccsniff@latest", "--json", "--since", "1h", "--limit", "2000"],
+        ["npx.cmd", "--yes", "ccsniff@latest", "--json", "--since", _CCSINCE, "--limit", "2000"],
         capture_output=True, shell=True,
     )
     if r.returncode != 0:
@@ -51,6 +51,7 @@ def _train_on_rows(rows: list, batch: int) -> float:
 
 
 _ENGINE = None
+_CCSINCE = "1h"
 
 
 def main():
@@ -60,7 +61,12 @@ def main():
     ap.add_argument("--dim", type=int, default=16)
     ap.add_argument("--layers", type=int, default=27)
     ap.add_argument("--seq-len", type=int, default=8)
+    ap.add_argument("--since", type=str, default="1h",
+                    help="ccsniff --since window, e.g. 1h, 7d, 24h (targets our live session history)")
     args = ap.parse_args()
+
+    global _CCSINCE
+    _CCSINCE = args.since
 
     vocab = Vocab.build(
         ['<tool_call>{"name":"edit"}</tool_call>', "<bash_output>ok</bash_output>",

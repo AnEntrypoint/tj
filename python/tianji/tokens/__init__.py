@@ -1,1 +1,1 @@
-from .apt import Vocab, APTOutput, encode, embed, decode, SPECIAL_TOKENS, SPECIAL_IDS
+from .apt import Vocab, EncodeOut, encode, embed, decode, SPECIAL_TAGS, SPECIAL_IDS

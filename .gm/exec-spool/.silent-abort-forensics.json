@@ -1,0 +1,24 @@
+{
+  "prior_pid": 202888,
+  "prior_ts": 1783806808427,
+  "prior_sha": "48ccb37424c4",
+  "prior_version": "0.1.849",
+  "detected_at": 1783806859368,
+  "age_ms": 50940,
+  "shutdown_reason_present": false,
+  "shutdown_reason_ts": null,
+  "prior_verb_active": null,
+  "prior_status": {
+    "pid": 202888,
+    "ts": 1783806843718,
+    "version": "0.1.849",
+    "instance_version": "0.1.849",
+    "file_version": "0.1.849",
+    "version_drifted": false,
+    "boot_reason": "initial",
+    "supervisor_pid": 183108,
+    "wrapper_sha": "48ccb37424c4",
+    "idle_limit_ms": 3600000
+  },
+  "prior_pid_alive": false
+}

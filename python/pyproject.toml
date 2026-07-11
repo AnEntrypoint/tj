@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tianji"
+version = "0.2.0"
+description = "Tianji-4B: agentic API distillation runtime (4GB VRAM target)"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.1",
+    "numpy>=1.24",
+    "tree_sitter>=0.21",
+    "tree_sitter_python>=0.21",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+multi-lang = [
+    "tree_sitter_javascript>=0.21",
+    "tree_sitter_typescript>=0.21",
+    "tree_sitter_go>=0.21",
+]
+
+[project.scripts]
+tianji = "tianji.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["tianji*"]

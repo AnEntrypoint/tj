@@ -1,0 +1,80 @@
+{
+  "latest": {
+    "ts": 1783806859377,
+    "version": "0.1.849",
+    "severity": "warn",
+    "planned": false,
+    "boot_reason": "initial",
+    "supervisor_pid": 202996,
+    "prior_shutdown": null,
+    "prior_status": {
+      "pid": 202888,
+      "ts": 1783806843718,
+      "version": "0.1.849",
+      "instance_version": "0.1.849",
+      "file_version": "0.1.849",
+      "version_drifted": false,
+      "boot_reason": "initial",
+      "supervisor_pid": 183108,
+      "wrapper_sha": "48ccb37424c4",
+      "idle_limit_ms": 3600000
+    },
+    "prior_status_age_ms": 15659,
+    "log_tail_path": "C:\\dev\\tj\\.gm\\exec-spool\\.watcher.log",
+    "gm_log_dir": "C:\\Users\\user\\.claude\\gm-log",
+    "instruction": "Prior watcher disappeared with a recent heartbeat -- likely a clean shutdown that did not write .shutdown-reason.json. Inspect .watcher.log if recurrent."
+  },
+  "count": 2,
+  "history": [
+    {
+      "ts": 1783806776900,
+      "version": "0.1.849",
+      "severity": "warn",
+      "planned": false,
+      "boot_reason": "unplanned-restart-after-exit",
+      "supervisor_pid": 150424,
+      "prior_shutdown": null,
+      "prior_status": {
+        "pid": 197128,
+        "ts": 1783806768726,
+        "version": "0.1.849",
+        "instance_version": "0.1.849",
+        "file_version": "0.1.849",
+        "version_drifted": false,
+        "boot_reason": "initial",
+        "supervisor_pid": 150424,
+        "wrapper_sha": "48ccb37424c4",
+        "idle_limit_ms": 3600000
+      },
+      "prior_status_age_ms": 8174,
+      "log_tail_path": "C:\\dev\\tj\\.gm\\exec-spool\\.watcher.log",
+      "gm_log_dir": "C:\\Users\\user\\.claude\\gm-log",
+      "instruction": "Prior watcher disappeared with a recent heartbeat -- likely a clean shutdown that did not write .shutdown-reason.json. Inspect .watcher.log if recurrent."
+    },
+    {
+      "ts": 1783806859377,
+      "version": "0.1.849",
+      "severity": "warn",
+      "planned": false,
+      "boot_reason": "initial",
+      "supervisor_pid": 202996,
+      "prior_shutdown": null,
+      "prior_status": {
+        "pid": 202888,
+        "ts": 1783806843718,
+        "version": "0.1.849",
+        "instance_version": "0.1.849",
+        "file_version": "0.1.849",
+        "version_drifted": false,
+        "boot_reason": "initial",
+        "supervisor_pid": 183108,
+        "wrapper_sha": "48ccb37424c4",
+        "idle_limit_ms": 3600000
+      },
+      "prior_status_age_ms": 15659,
+      "log_tail_path": "C:\\dev\\tj\\.gm\\exec-spool\\.watcher.log",
+      "gm_log_dir": "C:\\Users\\user\\.claude\\gm-log",
+      "instruction": "Prior watcher disappeared with a recent heartbeat -- likely a clean shutdown that did not write .shutdown-reason.json. Inspect .watcher.log if recurrent."
+    }
+  ]
+}

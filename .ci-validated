@@ -1,10 +1,1 @@
-# CI validated
-repo: AnEntrypoint/tj
-commit: ed7f69b
-run: https://github.com/AnEntrypoint/tj/actions/runs/29210755788
-conclusion: success
-validated_at: 2026-07-12T22:10:00Z
-checks:
-  - pytest (python/tests, 64 tests) PASS
-  - tianji.cli demo PASS
-  - tianji.cli ingest-ccsniff --batch 4 PASS
+{"head_sha":"3634ee62c628795d9c6bcae25fd24d2895e6ea1b"}

@@ -59,12 +59,36 @@ npx ccwatch
 python scripts/train.py --steps 20 --batch 64 --seq-len 64
 ```
 
-`train.py` rolls up sessions via `npx ccsniff --json`, verifies them into frames,
-and runs the QAT loop. Loss should decrease monotonically as more sessions are seen.
+`train.py` rolls up sessions via `npx ccsniff --json`, verifies them into
+hash-chained frames (`tianji.protocol`), and runs the QAT loop **plus the
+state-transition head**. Training is incremental and persistent:
+
+- Each event is trained at most once — rows are deduped by `(sid, ts)` across
+  steps and across runs.
+- Model + state-head checkpoints are written to `--checkpoint-dir` (default
+  `.tianji_ckpt`); resume a prior run with `--resume` to keep accumulating.
+- The vocab is seeded from a real sample of the first ingested batch, so
+  tokenization covers live agent vocabulary.
+
+The QAT loss (next-token CE + aux) should decrease as more sessions are seen,
+and the `state_acc` line reports the state head's next-event-kind prediction
+accuracy, which should climb above the 1/7 random baseline as it learns.
 
 ## Design notes
 
 - The hybrid stack is `27` layers = `18` Mamba-2 blocks + `9` MLA+MoE blocks.
 - Only the output head carries LoRA adapters (1 adapter per checkpoint) to stay
-  inside the 4 GB budget; the rest of the stack is quantized.
+  inside the 4 GB budget; the rest of the stack is quantized. The 4 GB VRAM
+  budget is enforced as a hard invariant (`ResourceBudget`) at construction.
 - Frames are hash-chained (`sha256:`) so ingested training data is reproducible.
+- The state-transition head (`tianji.state.transition`) is **trained**: given the
+  latent agent state (pooled hybrid-stack hidden) it predicts the next event
+  kind and whether the agent is about to exit. It is wired to its own optimizer.
+- Knowledge distillation uses a deterministic stub teacher by default (no real
+  teacher is bundled), so KD weight is `0` — only CE + aux train the LM. Supply
+  a real teacher to `QATLoop` to activate KD.
+- `ccsniff --json` emits `{ts,iso,sid,parent,cwd,project,role,type,tool,isMeta,text}`.
+  `tianji.ingest.ccsniff` maps that verbatim; events are grouped by `sid` so a
+  frame never mixes sessions. Note: `isError`/`duration` are not part of the
+  `--json` contract, so tool-result exit codes are not available from the feed.
+

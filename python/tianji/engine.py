@@ -6,11 +6,17 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .tokens.apt import Vocab, encode, embed
 from .arch.hybrid import HybridConfig
 from .distill.qat_loop import QATLoop, QATConfig, QATStepResult
-from .state.transition import StateTransitionHead, StateTransitionConfig
+from .state.transition import (
+    StateTransitionHead,
+    StateTransitionConfig,
+    EVENT_KINDS,
+    kind_to_idx,
+)
 from .protocol import Frame, Trajectory
 
 
@@ -25,6 +31,8 @@ class EngineConfig:
 class StepResult:
     qat: QATStepResult
     state_loss: float
+    state_pred_kind: Optional[int] = None
+    state_target_kind: Optional[int] = None
 
 
 @dataclass
@@ -42,9 +50,15 @@ class Engine:
         self.device = torch.device(eng_cfg.device)
         self.qat = QATLoop(qat_cfg, arch, vocab_size=vocab.size)
         self.state_head = StateTransitionHead(
-            StateTransitionConfig(dim=arch.dim, hidden=arch.dim * 2, n_actions=8)
+            StateTransitionConfig(dim=arch.dim, hidden=arch.dim * 2, n_actions=len(EVENT_KINDS))
         ).to(self.device)
-        self.state_proj = nn.Linear(vocab.dim + vocab.ast_dim, arch.dim, bias=False).to(self.device)
+        self.state_proj = nn.Linear(arch.dim, arch.dim, bias=False).to(self.device)
+        # The state head is a genuine, trained sub-model -- not dead weight.
+        self.state_opt = torch.optim.AdamW(
+            [p for p in (*self.state_head.parameters(), *self.state_proj.parameters()) if p.requires_grad],
+            lr=qat_cfg.lr,
+        )
+        self._prev_state: Optional[torch.Tensor] = None
         self._closed = False
 
     @staticmethod
@@ -57,36 +71,95 @@ class Engine:
                 parts.append(ev.call.name)
         return "\n".join(parts)
 
+    def _agent_state(self, ids: torch.Tensor) -> torch.Tensor:
+        """Latent agent state = pooled hybrid-stack hidden projected to arch.dim."""
+        with torch.no_grad():
+            h = self.qat.hidden(ids)
+            pooled = h.mean(dim=1)
+            return self.state_proj(pooled)
+
     def step_frame(self, frame: Frame) -> StepResult:
         text = self._frame_text(frame)
         out = encode(text, self.vocab, parse_ast=True)
-        ids = out.ids
-        if len(ids) < 2:
-            ids = ids + ids + [0]
-        seq_len = max(2, self.cfg.seq_len)
-        if len(ids) > seq_len:
-            ids = ids[:seq_len]
+        ids = self._prepare_ids(out.ids)
         t = torch.tensor(ids, dtype=torch.long, device=self.device)
         inp = t[:-1].unsqueeze(0)
         tgt = t[1:].unsqueeze(0)
         qat_res = self.qat.step(inp, tgt, source=frame.source)
+
+        state = self._agent_state(inp)
+
+        state_loss = 0.0
+        pred_kind: Optional[int] = None
+        target_kind: Optional[int] = None
+        if self._prev_state is not None:
+            target_kind = kind_to_idx(frame.events[0].kind)
+            target_exit = 1.0 if frame.events[0].kind in ("exec_trace", "trace_end") else 0.0
+            ctx = torch.zeros(1, self.arch.dim, device=self.device)
+            preds = self.state_head(self._prev_state, ctx)
+            pred_kind = int(preds["action_logits"].argmax(dim=-1).item())
+            kind_t = torch.tensor([target_kind], device=self.device)
+            exit_t = torch.tensor([target_exit], device=self.device)
+            a_loss = F.cross_entropy(preds["action_logits"], kind_t)
+            e_loss = F.binary_cross_entropy_with_logits(preds["exit_logit"], exit_t)
+            d_loss = F.mse_loss(preds["delta"], state - self._prev_state)
+            state_loss = float((a_loss + e_loss + 0.1 * d_loss).item())
+            (a_loss + e_loss + 0.1 * d_loss).backward()
+            self.state_opt.step()
+            self.state_opt.zero_grad()
+
+        self._prev_state = state.detach()
+        return StepResult(qat=qat_res, state_loss=state_loss,
+                          state_pred_kind=pred_kind, state_target_kind=target_kind)
+
+    def predict_next_kind(self, state: torch.Tensor) -> int:
+        """Greedy next-event-kind prediction from a latent state (no grad)."""
         with torch.no_grad():
             ctx = torch.zeros(1, self.arch.dim, device=self.device)
-            emb = embed(out, self.vocab)
-            state = self.state_proj(torch.tensor(emb, device=self.device).mean(dim=0, keepdim=True))
-            sim = self.state_head.simulate(state, ctx)
-            state_loss = float(sim["action_pred"].float().mean().item())
-        return StepResult(qat=qat_res, state_loss=state_loss)
+            preds = self.state_head(state, ctx)
+            return int(preds["action_logits"].argmax(dim=-1).item())
+
+    @staticmethod
+    def _prepare_ids(raw_ids) -> list:
+        """Ensure a non-trivial token sequence so input/target pairs exist even
+        for frames whose text encodes to very few tokens (e.g. exec_trace-only
+        frames). Avoids empty tensors that crash the recurrent stack."""
+        ids = list(raw_ids)
+        if len(ids) < 2:
+            ids = (ids + ids + [0, 0])[:2]
+            if len(ids) < 2:
+                ids = [0, 0]
+        return ids
 
     def simulate_action(self, text: str) -> dict:
         if not text:
             raise ValueError("empty action text")
         out = encode(text, self.vocab, parse_ast=True)
-        emb = embed(out, self.vocab)
-        state = self.state_proj(torch.tensor(emb, device=self.device).mean(dim=0, keepdim=True))
+        ids = self._prepare_ids(out.ids)
+        t = torch.tensor(ids, dtype=torch.long, device=self.device).unsqueeze(0)
+        state = self._agent_state(t)
         ctx = torch.zeros(1, self.arch.dim, device=self.device)
         sim = self.state_head.simulate(state, ctx)
         return {"delta": sim["delta"], "exit_pred": sim["exit_pred"], "action_pred": sim["action_pred"]}
+
+    def save_training_state(self, path: str) -> None:
+        torch.save(
+            {
+                "state_head": self.state_head.state_dict(),
+                "state_proj": self.state_proj.state_dict(),
+                "state_opt": self.state_opt.state_dict(),
+                "vocab": self.vocab,
+            },
+            path,
+        )
+
+    def load_training_state(self, path: str) -> None:
+        ck = torch.load(path, map_location=self.device, weights_only=False)
+        self.state_head.load_state_dict(ck["state_head"])
+        self.state_proj.load_state_dict(ck["state_proj"])
+        self.state_opt.load_state_dict(ck["state_opt"])
+        self.vocab = ck["vocab"]
+        self._prev_state = None
 
     def close(self) -> None:
         self._closed = True

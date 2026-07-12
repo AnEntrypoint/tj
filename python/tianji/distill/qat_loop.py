@@ -11,7 +11,7 @@ import torch.nn as nn
 from ..arch.hybrid import HybridStack, HybridConfig
 from .lora import wrap_linear_with_lora, LoRAConfig, save_lora_state, load_lora_state
 from .replay import ReplayBuffer
-from .kd import kd_loss, make_stub_teacher
+from .kd import kd_loss, make_stub_teacher, StubTeacher
 from .router_alignment import RouterAlignment, apply_router_bias
 from ..caps import ResourceBudget
 
@@ -22,6 +22,7 @@ class QATConfig:
     lora_rank: int = 4
     vram_bytes: int = 4 * 1024 ** 3
     lr: float = 1e-3
+    kd_alpha: float = 0.5
 
 
 @dataclass
@@ -56,6 +57,14 @@ class QATLoop:
         self.alignment = RouterAlignment.build(arch.dim)
         self.budget = ResourceBudget("vram", cfg.vram_bytes)
         self.opt = torch.optim.AdamW([p for p in self.model.parameters() if p.requires_grad], lr=cfg.lr)
+        # A stub teacher emits fixed random logits; distilling toward it only
+        # injects noise, so KD is disabled unless a real teacher is supplied.
+        self.kd_enabled = not isinstance(self.teacher, StubTeacher)
+        self.kd_alpha = cfg.kd_alpha
+        # The 4GB VRAM budget is a real invariant, not just a tracked number:
+        # allocate the model's footprint up front and fail loudly if it exceeds.
+        self._model_bytes = sum(p.numel() * p.element_size() for p in self.model.parameters())
+        self.budget.allocate(self._model_bytes)
         self._closed = False
 
     def _vram(self) -> int:
@@ -76,7 +85,8 @@ class QATLoop:
         with torch.no_grad():
             teacher_logits = self.teacher(input_ids)
         kd = kd_loss(logits, teacher_logits.detach(), T=2.0)
-        loss = ce + 0.5 * kd + 0.01 * aux
+        kd_term = (self.kd_alpha if self.kd_enabled else 0.0) * kd
+        loss = ce + kd_term + 0.01 * aux
         loss.backward()
         self.opt.step()
         self.replay.push(input_ids.detach().cpu(), target_ids.detach().cpu())
@@ -86,6 +96,15 @@ class QATLoop:
             vram_used_bytes=int(self._vram()),
             aux_loss=float(aux.item()),
         )
+
+    @torch.no_grad()
+    def hidden(self, input_ids: torch.Tensor) -> torch.Tensor:
+        """Return the hybrid stack's final hidden states (pre-head) for the
+        given token ids -- used by the Engine as the agent's latent state."""
+        input_ids = input_ids.to(self.device)
+        h = self.model.embed(input_ids)
+        h, _ = self.model.stack(h)
+        return h
 
     def save_checkpoint(self, path: str) -> None:
         torch.save({"lora": save_lora_state(self.model), "cfg": self.cfg, "vocab_size": self.vocab_size}, path)
@@ -97,5 +116,6 @@ class QATLoop:
 
     def close(self) -> None:
         self._closed = True
+        self.budget.free(self._model_bytes)
         if self.device.type == "cuda":
             torch.cuda.empty_cache()

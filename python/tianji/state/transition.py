@@ -14,6 +14,25 @@ class StateTransitionConfig:
     n_actions: int = 8
 
 
+# Canonical agent-event kinds the state head learns to predict as the agent's
+# "next action". Index order is the contract used for action_logits targets.
+EVENT_KINDS = (
+    "system_prompt",
+    "context",
+    "cot",
+    "tool_call",
+    "tool_result",
+    "exec_trace",
+    "trace_end",
+)
+
+KIND_TO_IDX = {k: i for i, k in enumerate(EVENT_KINDS)}
+
+
+def kind_to_idx(kind: str) -> int:
+    return KIND_TO_IDX.get(kind, KIND_TO_IDX["context"])
+
+
 class StateTransitionHead(nn.Module):
     def __init__(self, cfg: StateTransitionConfig):
         super().__init__()

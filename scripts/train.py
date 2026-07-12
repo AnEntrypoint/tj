@@ -18,6 +18,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import torch
@@ -40,6 +41,25 @@ _FALLBACK_CORPUS = [
 ]
 
 _CCSNIIF_BIN = "npx.cmd" if os.name == "nt" else "npx"
+
+# Wall-clock time (seconds) of the most recent ccsniff fetch. Used to make
+# later training steps fetch only events that arrived since the previous
+# fetch instead of re-pulling the whole --since window every step.
+_LAST_FETCH_WALL = None
+
+
+def _since_for_step(step: int, start_step: int, base_since: str) -> str:
+    """Window to fetch for ``step``.
+
+    The first step (cold start or after resume) pulls the full requested
+    history window so all prior events get trained once. Every later step
+    pulls only events that arrived since the previous fetch, which is a tiny
+    window and keeps long/multi-step CPU training cheap.
+    """
+    if step == start_step or _LAST_FETCH_WALL is None:
+        return base_since
+    elapsed = int(time.time() - _LAST_FETCH_WALL) + 2
+    return f"{max(elapsed, 5)}s"
 
 
 def _collect_ccsniff_rows(since: str, limit: int, seen: set) -> tuple:
@@ -182,17 +202,19 @@ def main():
     acc_correct = 0
     acc_total = 0
     for step in range(start_step, start_step + args.steps):
-        rows, max_ts = _collect_ccsniff_rows(args.since, args.limit, seen)
+        since = _since_for_step(step, start_step, args.since)
+        rows, max_ts = _collect_ccsniff_rows(since, args.limit, seen)
+        _LAST_FETCH_WALL = time.time()
         last_ts = max(last_ts, max_ts)
         if not rows:
-            print(f"[train] step {step}: no new ccsniff data yet")
+            print(f"[train] step {step}: no new ccsniff data in --since {since}")
             continue
         loss, pc, pt = _train_on_rows(rows, args.batch)
         acc_correct += pc
         acc_total += pt
         losses.append(loss)
         acc_str = f"{acc_correct}/{acc_total} ({100.0*acc_correct/max(1,acc_total):.1f}%)" if acc_total else "n/a"
-        print(f"[train] step {step}: rows={len(rows)} qat_loss={loss:.4f} "
+        print(f"[train] step {step}: since={since} rows={len(rows)} qat_loss={loss:.4f} "
               f"state_acc={acc_str} vram={_ENGINE.qat._vram()}B")
 
         if step % args.save_every == 0 or step == start_step + args.steps - 1:

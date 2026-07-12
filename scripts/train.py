@@ -147,18 +147,23 @@ def main():
     global _ENGINE
     ap = argparse.ArgumentParser()
     ap.add_argument("--steps", type=int, default=20)
-    ap.add_argument("--batch", type=int, default=32)
+    ap.add_argument("--batch", type=int, default=64)
     ap.add_argument("--dim", type=int, default=16)
     ap.add_argument("--ast-dim", type=int, default=8)
     ap.add_argument("--layers", type=int, default=27)
-    ap.add_argument("--seq-len", type=int, default=8)
+    ap.add_argument("--seq-len", type=int, default=32)
     ap.add_argument("--since", type=str, default="1h",
                     help="ccsniff --since window, e.g. 1h, 7d, 24h (targets our live session history)")
     ap.add_argument("--limit", type=int, default=2000)
     ap.add_argument("--save-every", type=int, default=5)
     ap.add_argument("--checkpoint-dir", type=str, default=".tianji_ckpt")
     ap.add_argument("--resume", action="store_true", help="resume from latest checkpoint in --checkpoint-dir")
+    ap.add_argument("--device", type=str, default=None, choices=["cpu", "cuda"],
+                    help="training device (default: auto-detect cuda if available, else cpu)")
     args = ap.parse_args()
+
+    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[train] device={device} (cuda available={torch.cuda.is_available()})")
 
     ckpt_dir = Path(args.checkpoint_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -179,8 +184,8 @@ def main():
         ck = torch.load(state_path, map_location="cpu", weights_only=False)
         vocab = ck["vocab"]
         arch = HybridConfig(dim=args.dim, n_layers=args.layers)
-        qat_cfg = QATConfig(device="cpu", lora_rank=4, vram_bytes=4 * 1024 ** 3)
-        eng_cfg = EngineConfig(device="cpu", seq_len=args.seq_len, batch_size=1)
+        qat_cfg = QATConfig(device=device, lora_rank=4, vram_bytes=4 * 1024 ** 3)
+        eng_cfg = EngineConfig(device=device, seq_len=args.seq_len, batch_size=1)
         _ENGINE = Engine(vocab, arch, qat_cfg, eng_cfg)
         _ENGINE.load_training_state(state_path)
         _ENGINE.qat.load_checkpoint(qat_path)
@@ -191,8 +196,8 @@ def main():
         seen.clear()  # seed rows are for vocab only; let the loop train them too
         vocab = _seed_vocab(seed_rows, args.dim, args.ast_dim)
         arch = HybridConfig(dim=args.dim, n_layers=args.layers)
-        qat_cfg = QATConfig(device="cpu", lora_rank=4, vram_bytes=4 * 1024 ** 3)
-        eng_cfg = EngineConfig(device="cpu", seq_len=args.seq_len, batch_size=1)
+        qat_cfg = QATConfig(device=device, lora_rank=4, vram_bytes=4 * 1024 ** 3)
+        eng_cfg = EngineConfig(device=device, seq_len=args.seq_len, batch_size=1)
         _ENGINE = Engine(vocab, arch, qat_cfg, eng_cfg)
         print(f"[train] built engine vocab_size={vocab.size}, layers={arch.n_layers}")
 

@@ -44,9 +44,12 @@ def _vram_bytes_used(qat: QATLoop) -> int:
 def cmd_demo(args):
     vocab = _default_vocab()
     arch = _default_arch()
-    qat = QATLoop(_default_qat(), arch, vocab_size=vocab.size)
-    print(f"[demo] built model with vocab_size={vocab.size}, layers={arch.n_layers}")
+    dev = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    qat = QATLoop(_default_qat(device=dev), arch, vocab_size=vocab.size)
+    print(f"[demo] built model with vocab_size={vocab.size}, layers={arch.n_layers}, device={dev}")
     ids = torch.randint(0, vocab.size, (2, 8))
+    if dev == "cuda":
+        ids = ids.cuda()
     res = qat.step(ids, ids.roll(-1, dims=1), source="synthetic")
     print(f"[demo] step loss={res.loss:.4f} kd={res.kd_loss:.4f} vram={res.vram_used_bytes} bytes")
     qat.close()
@@ -56,12 +59,13 @@ def cmd_demo(args):
 def cmd_infer(args):
     vocab = _default_vocab()
     arch = _default_arch(dim=args.dim, n_layers=args.layers)
-    qat = QATLoop(_default_qat(), arch, vocab_size=vocab.size)
+    dev = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    qat = QATLoop(_default_qat(device=dev), arch, vocab_size=vocab.size)
     from .infer.generator import Generator, GenerateConfig
     prompt = [1, 2, 3, 4]
     gen = Generator(qat, GenerateConfig(max_tokens=args.n, paged_kv_blocks=8))
     toks = [s.token for s in gen.generate(prompt)]
-    print(f"[infer] generated {len(toks)} tokens: {toks}")
+    print(f"[infer] generated {len(toks)} tokens on {dev}: {toks}")
     qat.close()
 
 
@@ -111,13 +115,17 @@ def main(argv=None):
     p = argparse.ArgumentParser(prog="tianji")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("demo")
+    pd = sub.add_parser("demo")
+    pd.add_argument("--device", default=None, choices=["cpu", "cuda"],
+                    help="device (default: auto-detect)")
 
     pi = sub.add_parser("infer")
     pi.add_argument("--prompt", default="def fib(n): return n")
     pi.add_argument("--n", type=int, default=8)
     pi.add_argument("--dim", type=int, default=16)
     pi.add_argument("--layers", type=int, default=27)
+    pi.add_argument("--device", default=None, choices=["cpu", "cuda"],
+                    help="device (default: auto-detect)")
 
     pc = sub.add_parser("ingest-ccsniff")
     pc.add_argument("--jsonl", default=None)
@@ -127,6 +135,13 @@ def main(argv=None):
     pck.add_argument("action", choices=["save", "load"])
     pck.add_argument("path")
 
+    ps = sub.add_parser("serve")
+    ps.add_argument("--host", default="0.0.0.0")
+    ps.add_argument("--port", type=int, default=8080)
+    ps.add_argument("--device", default="cuda", choices=["cpu", "cuda"])
+    ps.add_argument("--ckpt", default=None, help="path to LoRA checkpoint .pt")
+    ps.add_argument("--reload", action="store_true", help="hot-reload (dev only)")
+
     args = p.parse_args(argv)
     dispatch = {
         "demo": cmd_demo,
@@ -134,6 +149,13 @@ def main(argv=None):
         "ingest-ccsniff": cmd_ingest_ccsniff,
         "checkpoint": cmd_checkpoint,
     }
+    if args.cmd == "serve":
+        from .server import serve
+        return serve(argv=[getattr(args, "host", "0.0.0.0"),
+                          "--port", str(getattr(args, "port", 8080)),
+                          "--device", getattr(args, "device", "cpu")] +
+                         (["--ckpt", args.ckpt] if args.ckpt else []) +
+                         (["--reload"] if args.reload else []))
     dispatch[args.cmd](args)
     return 0
 

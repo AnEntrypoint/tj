@@ -72,22 +72,62 @@ class Engine:
         return "\n".join(parts)
 
     def _agent_state(self, ids: torch.Tensor) -> torch.Tensor:
-        """Latent agent state = pooled hybrid-stack hidden projected to arch.dim."""
-        with torch.no_grad():
-            h = self.qat.hidden(ids)
-            pooled = h.mean(dim=1)
-            return self.state_proj(pooled)
+        """Latent agent state = pooled hybrid-stack hidden projected to arch.dim.
+        Chunked over ``seq_len`` so a very long (e.g. 200k-token) frame does not
+        OOM the full-frame forward; the final chunk's pooled state is used."""
+        L = max(2, int(self.cfg.seq_len))
+        pooled = None
+        for s in range(0, ids.shape[1], L):
+            e = min(s + L, ids.shape[1])
+            with torch.no_grad():
+                h = self.qat.hidden(ids[:, s:e])
+                pooled = h.mean(dim=1)
+        return self.state_proj(pooled)
 
     def step_frame(self, frame: Frame) -> StepResult:
         text = self._frame_text(frame)
         out = encode(text, self.vocab, parse_ast=True)
         ids = self._prepare_ids(out.ids)
         t = torch.tensor(ids, dtype=torch.long, device=self.device)
-        inp = t[:-1].unsqueeze(0)
-        tgt = t[1:].unsqueeze(0)
-        qat_res = self.qat.step(inp, tgt, source=frame.source)
+        # Train over the whole frame in chunks of exactly ``seq_len`` tokens.
+        # Padding each chunk to a fixed ``seq_len`` (with a loss mask over the
+        # real positions) keeps the tensor shapes static, which is what lets the
+        # CUDA-graph (cudagraph) fast path capture a single reusable graph and
+        # replay it every step. This bounds activation memory (so a full-history
+        # session of hundreds of thousands of tokens does not OOM) while still
+        # exposing the model to the full within-frame context up to seq_len.
+        # With --seq-len 200000 a 200k-token frame becomes a single chunk and the
+        # long-context attention (RoPE + memory-efficient global causal SDPA)
+        # attends over all 200k.
+        chunk = max(2, int(self.cfg.seq_len))
+        L = chunk
+        qat_loss_sum = 0.0
+        qat_n = 0
+        T = len(ids)
+        for start in range(0, max(1, T - 1), chunk):
+            end = min(start + chunk, T)
+            seg = end - start
+            if seg < 2:
+                continue
+            inp = t[start:end - 1]
+            tgt = t[start + 1:end]
+            mask = torch.ones(L, dtype=torch.bool, device=self.device)
+            pad = L - inp.shape[0]
+            if pad > 0:
+                inp = torch.cat([inp, inp.new_zeros(pad)])
+                tgt = torch.cat([tgt, tgt.new_zeros(pad)])
+                mask[L - pad:] = False
+            res = self.qat.step(inp.unsqueeze(0), tgt.unsqueeze(0),
+                                mask=mask.unsqueeze(0), source=frame.source)
+            qat_loss_sum += res.loss
+            qat_n += 1
+        qat_res = QATStepResult(
+            loss=qat_loss_sum / max(1, qat_n),
+            kd_loss=0.0,
+            vram_used_bytes=int(self.qat._vram()),
+        )
 
-        state = self._agent_state(inp)
+        state = self._agent_state(t.unsqueeze(0))
 
         state_loss = 0.0
         pred_kind: Optional[int] = None

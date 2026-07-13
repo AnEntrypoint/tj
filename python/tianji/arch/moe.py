@@ -43,13 +43,14 @@ class MoELayer(nn.Module):
         w, idx = probs.topk(topk, dim=-1)
         w = w / (w.sum(dim=-1, keepdim=True) + 1e-8)
         out = torch.zeros_like(flat)
-        for k in range(topk):
-            expert_id = idx[:, k]
-            weight = w[:, k].unsqueeze(-1)
-            for e in range(self.cfg.n_experts):
-                mask = (expert_id == e)
-                if mask.any():
-                    out[mask] += weight[mask] * self.experts[e](flat[mask])
+        for e in range(self.cfg.n_experts):
+            # Static-shape MoE: every expert always processes ALL tokens,
+            # weighted by each token's router weight for this expert.  No
+            # boolean indexing or dynamic-size masking, so this captures
+            # cleanly into a CUDA graph (cudagraphs) at any layer count.
+            sel = (idx == e).float()              # (b*t, topk) 1 for chosen slots
+            total_weight = (sel * w).sum(dim=-1, keepdim=True)  # (b*t, 1)
+            out += total_weight * self.experts[e](flat)
         for s in self.shared:
             out += s(flat)
         aux = self._aux(probs, idx, topk)

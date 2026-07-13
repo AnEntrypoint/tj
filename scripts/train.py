@@ -40,12 +40,27 @@ _FALLBACK_CORPUS = [
     "<diff>--- a\n+++ b\n</diff>",
 ]
 
-_CCSNIIF_BIN = "npx.cmd" if os.name == "nt" else "npx"
+_CCSNIIF_BIN = os.environ.get("CCSNIIF_BIN", "npx.cmd" if os.name == "nt" else "npx")
 
 # Wall-clock time (seconds) of the most recent ccsniff fetch. Used to make
 # later training steps fetch only events that arrived since the previous
 # fetch instead of re-pulling the whole --since window every step.
 _LAST_FETCH_WALL = None
+
+
+def _lower_priority() -> None:
+    """Drop our CPU scheduling priority so long background training never
+    starves interactive work. No-op if the platform/permissions disallow it."""
+    try:
+        if os.name == "nt":
+            import ctypes
+            # BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
+            ctypes.windll.kernel32.SetPriorityClass(
+                ctypes.windll.kernel32.GetCurrentProcess(), 0x00004000)
+        else:
+            os.nice(10)
+    except Exception:
+        pass
 
 
 def _since_for_step(step: int, start_step: int, base_since: str) -> str:
@@ -67,40 +82,68 @@ def _collect_ccsniff_rows(since: str, limit: int, seen: set) -> tuple:
 
     Rows already present in ``seen`` (keyed by (sid, ts)) are skipped so each
     event is trained at most once across steps/runs.
+
+    Output is streamed to a temp file (``stdout=open(tmp)``) rather than
+    ``capture_output=True``: for large corpora (the full Claude Code history is
+    ~1 GB of JSONL) the OS pipe buffer fills and the child blocks while the
+    parent waits for exit -> DEADLOCK. Writing to a file avoids pipe buffering
+    entirely, so the full history fetch completes instead of hanging at step 0.
     """
+    import tempfile
+    tmp = None
     try:
-        r = subprocess.run(
-            [_CCSNIIF_BIN, "--yes", "ccsniff@latest", "--json", "--since", since, "--limit", str(limit)],
-            capture_output=True, shell=True,
-        )
+        fd, tmp = tempfile.mkstemp(prefix="tianji_ccsniff_", suffix=".jsonl")
+        os.close(fd)
+        # When the binary is npx we must pass the package spec ("ccsniff@latest")
+        # and --yes; for a direct binary (e.g. node .../cli.js, or a pinned
+        # ccsniff install) those tokens are invalid and must be dropped so the
+        # command actually runs (this is what lets CCSNIIF_BIN bypass the
+        # intermittent npx network hang). npx resolves via the shell (.cmd), so
+        # it runs with shell=True; a direct binary runs without a shell. The
+        # binary string is split on whitespace (handles "node <path>").
+        cmd = _CCSNIIF_BIN.split()
+        is_npx = cmd[0].endswith("npx") or cmd[0].endswith("npx.cmd")
+        if is_npx:
+            cmd += ["--yes", "ccsniff@latest"]
+        cmd += ["--json", "--full-history", "--since", since, "--limit", str(limit)]
+        with open(tmp, "w", encoding="utf-8") as fh:
+            r = subprocess.run(
+                cmd,
+                stdout=fh, stderr=subprocess.DEVNULL, shell=is_npx,
+            )
+        if r.returncode != 0:
+            print(f"[train] ccsniff collect failed (rc={r.returncode})", file=sys.stderr)
+            return [], 0
+        rows = []
+        max_ts = 0
+        with open(tmp, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                sid = row.get("sid") or "trace"
+                ts = int(row.get("ts", 0) or 0)
+                key = (sid, ts)
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append(row)
+                if ts > max_ts:
+                    max_ts = ts
+        return rows, max_ts
     except Exception as e:  # pragma: no cover - environment dependent
         print(f"[train] ccsniff subprocess error: {e}", file=sys.stderr)
         return [], 0
-    if r.returncode != 0:
-        msg = r.stderr.decode("utf-8", "replace").strip() if r.stderr else ""
-        print(f"[train] ccsniff collect failed (rc={r.returncode}): {msg}", file=sys.stderr)
-        return [], 0
-    out = r.stdout.decode("utf-8", "replace") if r.stdout else ""
-    rows = []
-    max_ts = 0
-    for line in out.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        sid = row.get("sid") or "trace"
-        ts = int(row.get("ts", 0) or 0)
-        key = (sid, ts)
-        if key in seen:
-            continue
-        seen.add(key)
-        rows.append(row)
-        if ts > max_ts:
-            max_ts = ts
-    return rows, max_ts
+    finally:
+        if tmp and os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
 def _seed_vocab(rows, dim: int, ast_dim: int) -> Vocab:
@@ -151,7 +194,13 @@ def main():
     ap.add_argument("--dim", type=int, default=16)
     ap.add_argument("--ast-dim", type=int, default=8)
     ap.add_argument("--layers", type=int, default=27)
-    ap.add_argument("--seq-len", type=int, default=32)
+    ap.add_argument("--seq-len", type=int, default=512,
+                    help="token chunk size fed to the model per step; raise toward "
+                         "200000 for full 200k context. The Engine chunks each frame "
+                         "into --seq-len pieces, so a 200k-token session is processed in "
+                         "chunks while Mamba-2's constant recurrent state carries "
+                         "cross-chunk context at inference (achieving 200k reach without a "
+                         "single n x n attention matrix).")
     ap.add_argument("--since", type=str, default="1h",
                     help="ccsniff --since window, e.g. 1h, 7d, 24h (targets our live session history)")
     ap.add_argument("--limit", type=int, default=2000)
@@ -163,6 +212,7 @@ def main():
     args = ap.parse_args()
 
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    _lower_priority()
     print(f"[train] device={device} (cuda available={torch.cuda.is_available()})")
 
     ckpt_dir = Path(args.checkpoint_dir)
@@ -184,7 +234,8 @@ def main():
         ck = torch.load(state_path, map_location="cpu", weights_only=False)
         vocab = ck["vocab"]
         arch = HybridConfig(dim=args.dim, n_layers=args.layers)
-        qat_cfg = QATConfig(device=device, lora_rank=4, vram_bytes=4 * 1024 ** 3)
+        qat_cfg = QATConfig(device=device, lora_rank=4, vram_bytes=4 * 1024 ** 3,
+                            seq_len=args.seq_len)
         eng_cfg = EngineConfig(device=device, seq_len=args.seq_len, batch_size=1)
         _ENGINE = Engine(vocab, arch, qat_cfg, eng_cfg)
         _ENGINE.load_training_state(state_path)
@@ -196,7 +247,8 @@ def main():
         seen.clear()  # seed rows are for vocab only; let the loop train them too
         vocab = _seed_vocab(seed_rows, args.dim, args.ast_dim)
         arch = HybridConfig(dim=args.dim, n_layers=args.layers)
-        qat_cfg = QATConfig(device=device, lora_rank=4, vram_bytes=4 * 1024 ** 3)
+        qat_cfg = QATConfig(device=device, lora_rank=4, vram_bytes=4 * 1024 ** 3,
+                            seq_len=args.seq_len)
         eng_cfg = EngineConfig(device=device, seq_len=args.seq_len, batch_size=1)
         _ENGINE = Engine(vocab, arch, qat_cfg, eng_cfg)
         print(f"[train] built engine vocab_size={vocab.size}, layers={arch.n_layers}")

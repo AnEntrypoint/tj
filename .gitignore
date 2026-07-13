@@ -22,3 +22,8 @@ build/
 dist/
 .tj-rollup.ndjson
 .tianji_ckpt*
+
+# Transient training output and test scripts
+python/_*.txt
+python/_t_*.py
+python/_t_*.txt

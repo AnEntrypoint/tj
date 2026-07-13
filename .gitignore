@@ -1,4 +1,5 @@
 .gm/
+.kilo/
 .gm/pw-sock-*/
 .gm/exec-spool/.watcher.log
 .gm/exec-spool/.cli-status.json

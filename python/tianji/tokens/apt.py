@@ -54,7 +54,11 @@ class Vocab:
         while len(tokens) < size:
             tokens.append(f"\u0001{len(tokens)}")
         tokens = tokens[:size]
-        char_ids = {ch: (n_special + i) for i, ch in enumerate(char_list)}
+        char_ids = {}
+        for i, ch in enumerate(char_list):
+            if n_special + i >= size:
+                break
+            char_ids[ch] = n_special + i
         embeddings = rng.standard_normal((size, dim + ast_dim)).astype(np.float32)
         embeddings[:n_special] = 0.0
         return cls(tokens=tokens, size=size, dim=dim, ast_dim=ast_dim, char_ids=char_ids, embeddings=embeddings)

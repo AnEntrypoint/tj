@@ -15,7 +15,7 @@ class SpeculativeResult:
 
 def speculative_step(embed, model, head, mtp, ctx: torch.Tensor) -> SpeculativeResult:
     h = embed(ctx)
-    h, _ = model(h)
+    h, _, _ = model(h)
     last = h[:, -1:, :]
     logits = head(last)
     draft = logits[-1].argmax(dim=-1)

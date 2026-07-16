@@ -10,7 +10,7 @@ def test_mamba2_forward_shape():
     cfg = MambaConfig(dim=16, state_dim=4, d_inner=32, dt_rank=4)
     y, state = Mamba2Layer(cfg)(torch.randn(2, 5, 16))
     assert y.shape == (2, 5, 16)
-    assert state.shape == (2, 4, 32)
+    assert state.shape == (2, 32, 4)
 
 
 def test_mla_forward_shape():
@@ -38,7 +38,7 @@ def test_hybrid_segmentation():
 
 
 def test_hybrid_forward_shape():
-    y, aux = HybridStack(HybridConfig(dim=16, n_layers=27))(torch.randn(1, 4, 16))
+    y, aux, _ = HybridStack(HybridConfig(dim=16, n_layers=27))(torch.randn(1, 4, 16))
     assert y.shape == (1, 4, 16)
     assert torch.isfinite(aux)
 

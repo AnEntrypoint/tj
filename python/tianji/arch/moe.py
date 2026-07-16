@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -34,10 +35,12 @@ class MoELayer(nn.Module):
         self.experts = nn.ModuleList([_Expert(cfg.dim, cfg.expert_hidden) for _ in range(cfg.n_experts)])
         self.shared = nn.ModuleList([_Expert(cfg.dim, cfg.expert_hidden) for _ in range(cfg.shared_experts)])
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, router_bias: Optional[torch.Tensor] = None):
         b, t, d = x.shape
         flat = x.reshape(-1, d)
         logits = self.router(flat)
+        if router_bias is not None:
+            logits = logits + router_bias.unsqueeze(0)
         probs = torch.softmax(logits, dim=-1)
         topk = min(self.cfg.n_active, self.cfg.n_experts)
         w, idx = probs.topk(topk, dim=-1)

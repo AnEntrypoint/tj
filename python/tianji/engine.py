@@ -61,6 +61,12 @@ class Engine:
         self._prev_state: Optional[torch.Tensor] = None
         self._closed = False
 
+        # Pre-allocate frame arena for zero-allocation hot loop.
+        L = max(2, int(eng_cfg.seq_len))
+        self._buf_inp = torch.zeros(1, L, dtype=torch.long, device=self.device)
+        self._buf_tgt = torch.zeros(1, L, dtype=torch.long, device=self.device)
+        self._buf_mask = torch.ones(1, L, dtype=torch.bool, device=self.device)
+
     @staticmethod
     def _frame_text(frame: Frame) -> str:
         parts = []
@@ -90,20 +96,18 @@ class Engine:
         ids = self._prepare_ids(out.ids)
         t = torch.tensor(ids, dtype=torch.long, device=self.device)
         # Train over the whole frame in chunks of exactly ``seq_len`` tokens.
-        # Padding each chunk to a fixed ``seq_len`` (with a loss mask over the
-        # real positions) keeps the tensor shapes static, which is what lets the
-        # CUDA-graph (cudagraph) fast path capture a single reusable graph and
-        # replay it every step. This bounds activation memory (so a full-history
-        # session of hundreds of thousands of tokens does not OOM) while still
-        # exposing the model to the full within-frame context up to seq_len.
-        # With --seq-len 200000 a 200k-token frame becomes a single chunk and the
-        # long-context attention (RoPE + memory-efficient global causal SDPA)
-        # attends over all 200k.
+        # Mamba-2 state is carried between chunks within a frame (teacher-forced
+        # TBPTT: state propagates forward but gradients detach at boundaries),
+        # so the model learns to use its ~200k-token context even though each
+        # backward step is truncated to seq_len.
         chunk = max(2, int(self.cfg.seq_len))
         L = chunk
         qat_loss_sum = 0.0
+        qat_kd_sum = 0.0
+        qat_aux_sum = 0.0
         qat_n = 0
         T = len(ids)
+        mamba_states: tuple[torch.Tensor, ...] | None = None
         for start in range(0, max(1, T - 1), chunk):
             end = min(start + chunk, T)
             seg = end - start
@@ -111,19 +115,29 @@ class Engine:
                 continue
             inp = t[start:end - 1]
             tgt = t[start + 1:end]
-            mask = torch.ones(L, dtype=torch.bool, device=self.device)
-            pad = L - inp.shape[0]
-            if pad > 0:
-                inp = torch.cat([inp, inp.new_zeros(pad)])
-                tgt = torch.cat([tgt, tgt.new_zeros(pad)])
-                mask[L - pad:] = False
-            res = self.qat.step(inp.unsqueeze(0), tgt.unsqueeze(0),
-                                mask=mask.unsqueeze(0), source=frame.source)
+            self._buf_inp.zero_()
+            self._buf_tgt.zero_()
+            self._buf_mask.fill_(True)
+            n_inp = inp.shape[0]
+            self._buf_inp[0, :n_inp].copy_(inp)
+            self._buf_tgt[0, :n_inp].copy_(tgt)
+            if n_inp < L:
+                self._buf_mask[0, n_inp:] = False
+            res, next_states = self.qat.step(self._buf_inp, self._buf_tgt,
+                                             mask=self._buf_mask, source=frame.source,
+                                             state_tuple=mamba_states)
             qat_loss_sum += res.loss
+            qat_kd_sum += res.kd_loss
+            qat_aux_sum += res.aux_loss
             qat_n += 1
+            if next_states is not None:
+                mamba_states = tuple(s.detach().clone() for s in next_states)
+            else:
+                mamba_states = None
         qat_res = QATStepResult(
             loss=qat_loss_sum / max(1, qat_n),
-            kd_loss=0.0,
+            kd_loss=qat_kd_sum / max(1, qat_n),
+            aux_loss=qat_aux_sum / max(1, qat_n),
             vram_used_bytes=int(self.qat._vram()),
         )
 

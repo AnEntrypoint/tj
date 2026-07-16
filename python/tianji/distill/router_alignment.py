@@ -13,20 +13,24 @@ SOURCE_TO_EXPERT = {
 
 
 class RouterAlignment:
-    def __init__(self, dim: int, bias: torch.Tensor):
-        self.dim = dim
+    def __init__(self, n_experts: int, bias: torch.Tensor):
+        self.n_experts = n_experts
         self._bias = bias
 
     @classmethod
-    def build(cls, dim: int) -> "RouterAlignment":
-        bias = torch.zeros(dim)
+    def build(cls, n_experts: int) -> "RouterAlignment":
+        bias = torch.zeros(n_experts)
         for expert_idx in SOURCE_TO_EXPERT.values():
-            if expert_idx < dim:
+            if expert_idx < n_experts:
                 bias[expert_idx] = 0.5
-        return cls(dim, bias)
+        return cls(n_experts, bias)
 
     def bias_for(self, source: str) -> torch.Tensor:
-        return self._bias.clone()
+        bias = torch.zeros(self.n_experts)
+        expert_idx = SOURCE_TO_EXPERT.get(source)
+        if expert_idx is not None and expert_idx < self.n_experts:
+            bias[expert_idx] = 0.5
+        return bias
 
 
 def apply_router_bias(logits: torch.Tensor, alignment: RouterAlignment, source: str) -> torch.Tensor:

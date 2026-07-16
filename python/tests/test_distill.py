@@ -77,7 +77,7 @@ def test_stub_teacher_is_deterministic():
 def test_qat_loop_runs_step():
     cfg = QATConfig(device="cpu", lora_rank=4, vram_bytes=4 * 1024 ** 3)
     qat = QATLoop(cfg, HybridConfig(dim=16, n_layers=27), vocab_size=64)
-    res = qat.step(torch.randint(0, 64, (2, 8)), torch.randint(0, 64, (2, 8)), source="cursor")
+    res, _ = qat.step(torch.randint(0, 64, (2, 8)), torch.randint(0, 64, (2, 8)), source="cursor")
     assert isinstance(res, QATStepResult)
     assert res.loss > 0
     assert res.kd_loss >= 0

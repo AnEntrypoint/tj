@@ -69,10 +69,16 @@ def _build_vocab() -> Vocab:
     return Vocab.build(corpus, target_size=512, dim=16, ast_dim=8)
 
 
-def load_model(device: str = "cpu", ckpt_path: Optional[str] = None) -> dict:
+def load_model(device: str = "cpu", ckpt_path: Optional[str] = None,
+               reload: bool = False) -> dict:
     global _loop, _vocab, _generator
-    if _loop is not None:
+    if _loop is not None and not reload:
         return {"status": "already loaded", "device": device}
+
+    if reload and _loop is not None:
+        _loop.close()
+        _loop = None
+        _generator = None
 
     _vocab = _build_vocab()
     arch = HybridConfig(dim=16, n_layers=27)
@@ -93,6 +99,16 @@ def load_model(device: str = "cpu", ckpt_path: Optional[str] = None) -> dict:
     }
     print(f"[server] model loaded: {json.dumps(info)}")
     return info
+
+
+def reload_model(ckpt_path: str) -> dict:
+    """Hot-reload checkpoint without restarting the server."""
+    global _loop, _generator
+    if _loop is None:
+        return {"status": "error", "message": "no model loaded"}
+    n = _loop.load_checkpoint(ckpt_path)
+    print(f"[server] hot-reloaded LoRA checkpoint ({n} adapters) from {ckpt_path}")
+    return {"status": "reloaded", "adapters_loaded": n}
 
 
 def unload_model() -> None:
@@ -209,6 +225,19 @@ def _make_app() -> Optional[FastAPI]:
             "vram_bytes": _get_vram(),
             "version": "0.2.0",
         }
+
+    # -------------------------------------------------------------------
+    # POST /v1/reload — hot-reload checkpoint without restart
+    # -------------------------------------------------------------------
+    @app.post("/v1/reload")
+    async def reload(request: Request):
+        if not _loop:
+            raise HTTPException(status_code=503, detail="model not loaded")
+        body = await request.json()
+        ckpt_path = body.get("ckpt_path")
+        if not ckpt_path or not os.path.exists(ckpt_path):
+            raise HTTPException(status_code=400, detail="ckpt_path required")
+        return reload_model(ckpt_path)
 
     # -----------------------------------------------------------------------
     # GET /v1/models

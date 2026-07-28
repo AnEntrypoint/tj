@@ -24,6 +24,12 @@ dist/
 .tj-rollup.ndjson
 .tianji_ckpt*
 
+# Agentplug runtime
+.agentplug-kv/
+
+# Test cache
+.pytest_cache/
+
 # Transient training output and test scripts
 python/_*.txt
 python/_t_*.py

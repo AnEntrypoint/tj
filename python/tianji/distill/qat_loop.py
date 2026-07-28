@@ -23,6 +23,7 @@ from .lora import wrap_linear_with_lora, LoRAConfig, save_lora_state, load_lora_
 from .replay import ReplayBuffer
 from .kd import kd_loss, make_stub_teacher, StubTeacher
 from .router_alignment import RouterAlignment
+from .ewc import EWCState
 from ..caps import ResourceBudget
 
 
@@ -34,6 +35,7 @@ class QATConfig:
     lr: float = 1e-3
     kd_alpha: float = 0.5
     seq_len: int = 512
+    precision: str = "fp16"  # "fp32", "fp16", "bf16"
 
 
 @dataclass
@@ -86,6 +88,24 @@ class QATLoop:
         self.budget.allocate(self._model_bytes)
         self._closed = False
 
+        # EWC for continual learning across data sources.
+        self._ewc: Optional["EWCState"] = None
+        self._ewc_lambda = 0.0  # disabled by default
+
+        # Automatic mixed precision (AMP) — saves ~40% VRAM on CUDA.
+        self._amp_dtype = None
+        self._scaler = None
+        if self.device.type == "cuda" and cfg.precision != "fp32":
+            if cfg.precision == "bf16" and torch.cuda.is_bf16_supported():
+                self._amp_dtype = torch.bfloat16
+            elif cfg.precision == "fp16":
+                self._amp_dtype = torch.float16
+                self._scaler = torch.amp.GradScaler("cuda")
+            if self._amp_dtype is not None:
+                print(
+                    f"[qat] AMP enabled: dtype={self._amp_dtype} scaler={'yes' if self._scaler else 'no'}",
+                    file=sys.stderr, flush=True)
+
         # Pre-allocate Mamba-2 state buffers for CUDA graph.
         # Shape: (batch=1, d_inner, state_dim).
         # Separate in/out buffers: the graph reads from in (never modified
@@ -110,9 +130,18 @@ class QATLoop:
         self._graph = None
         _compile = os.environ.get("TIANJI_COMPILE",
                                   "1" if torch.cuda.is_available() else "0")
-        _force_graph = os.environ.get("TIANJI_CUDAGRAPH", "0") == "1"
+        _no_graph = os.environ.get("TIANJI_CUDAGRAPH", "1") == "0"
         if _compile != "0" and self.device.type == "cuda":
-            if _TRITON_OK:
+            # CUDA graphs are the default acceleration path — they work on
+            # both Windows and Linux, are more memory-predictable than
+            # torch.compile, and capture the full fwd+bwd in one replayable
+            # graph.  Only skip if explicitly disabled (TIANJI_CUDAGRAPH=0)
+            # or if the model is too large for graph capture.
+            if not _no_graph:
+                self._setup_cudagraph()
+            # If cudagraph capture failed or was skipped, try torch.compile
+            # on Linux as a secondary acceleration path (Triton-dependent).
+            if self._graph is None and _TRITON_OK:
                 try:
                     torch._dynamo.config.suppress_errors = True
                     self.model = torch.compile(
@@ -121,15 +150,13 @@ class QATLoop:
                     print(
                         f"[qat] torch.compile unavailable, using eager: {_e}",
                         file=sys.stderr, flush=True)
-            elif _force_graph:
-                # CUDA graph capture on Windows at dim >= 768 can OOM /
-                # corrupt the CUDA context; only attempt when explicitly
-                # requested via TIANJI_CUDAGRAPH=1.
-                self._setup_cudagraph()
         if self._graph is None and self.device.type == "cuda":
-            # If graph capture didn't happen (eager fallback) we can still
-            # train — just slower.  Log once so the user isn't surprised.
-            pass
+            # If neither graph capture nor compile succeeded, we can still
+            # train — just slower.  Log the fallback once.
+            if _compile != "0":
+                print(
+                    "[qat] no graph acceleration available, using eager mode",
+                    file=sys.stderr, flush=True)
 
     def _vram(self) -> int:
         if self.device.type == "cuda":
@@ -172,7 +199,11 @@ class QATLoop:
             self._graph.replay()
             # Optimizer step outside the graph so AdamW state allocations
             # don't get captured into the graph memory pool (would exceed 6GB).
-            self.opt.step()
+            if self._scaler is not None:
+                self._scaler.step(self.opt)
+                self._scaler.update()
+            else:
+                self.opt.step()
             loss = float(self._g_loss.item())
             kd = float(self._g_kd.item())
             aux = float(self._g_aux.item())
@@ -191,7 +222,8 @@ class QATLoop:
 
         # ── Eager fallback (no CUDA graph) ──────────────────────────────
         self.opt.zero_grad(set_to_none=True)
-        logits, aux, next_states = self.model(input_ids, state_tuple)
+        with torch.amp.autocast("cuda", enabled=self._amp_dtype is not None, dtype=self._amp_dtype):
+            logits, aux, next_states = self.model(input_ids, state_tuple)
         ce = torch.nn.functional.cross_entropy(
             logits.view(-1, self.vocab_size),
             target_ids.view(-1), reduction="none")
@@ -200,13 +232,21 @@ class QATLoop:
             ce = (ce * m).sum() / m.sum().clamp(min=1)
         else:
             ce = ce.mean()
-        with torch.no_grad():
-            teacher_logits = self.teacher(input_ids)
+        with torch.amp.autocast("cuda", enabled=self._amp_dtype is not None, dtype=self._amp_dtype):
+            with torch.no_grad():
+                teacher_logits = self.teacher(input_ids)
         kd = kd_loss(logits, teacher_logits.detach(), T=2.0)
         kd_term = (self.kd_alpha if self.kd_enabled else 0.0) * kd
         loss = ce + kd_term + 0.01 * aux
-        loss.backward()
-        self.opt.step()
+        if self._ewc is not None and self._ewc_lambda > 0:
+            loss = loss + self._ewc.penalty(self.model, self._ewc_lambda)
+        if self._scaler is not None:
+            self._scaler.scale(loss).backward()
+            self._scaler.step(self.opt)
+            self._scaler.update()
+        else:
+            loss.backward()
+            self.opt.step()
         self.replay.push(
             input_ids.detach().cpu(), target_ids.detach().cpu())
         return (QATStepResult(
@@ -228,8 +268,9 @@ class QATLoop:
         so the caller can copy out->in without autograd in-place errors.
         """
         self.opt.zero_grad()
-        logits, aux, next_states = self.model(
-            inp, self._g_state_in_tuple, router_bias=self._g_router_bias)
+        with torch.amp.autocast("cuda", enabled=self._amp_dtype is not None, dtype=self._amp_dtype):
+            logits, aux, next_states = self.model(
+                inp, self._g_state_in_tuple, router_bias=self._g_router_bias)
         if next_states is not None:
             for i, ns in enumerate(next_states):
                 self._g_state_out[i].copy_(ns)
@@ -237,15 +278,21 @@ class QATLoop:
             logits.view(-1, self.vocab_size), tgt.view(-1), reduction="none")
         m = mask.view(-1)
         ce = (ce * m).sum() / m.sum().clamp(min=1)
-        with torch.no_grad():
-            teacher_logits = self.teacher(inp)
+        with torch.amp.autocast("cuda", enabled=self._amp_dtype is not None, dtype=self._amp_dtype):
+            with torch.no_grad():
+                teacher_logits = self.teacher(inp)
         kd = kd_loss(logits, teacher_logits.detach(), T=2.0)
         self._g_kd.copy_(kd.detach())
         self._g_aux.copy_(aux.detach())
         kd_term = (self.kd_alpha if self.kd_enabled else 0.0) * kd
         loss = ce + kd_term + 0.01 * aux
         self._g_loss.copy_(loss.detach())
-        loss.backward()
+        if self._ewc is not None and self._ewc_lambda > 0:
+            loss = loss + self._ewc.penalty(self.model, self._ewc_lambda)
+        if self._scaler is not None:
+            self._scaler.scale(loss).backward()
+        else:
+            loss.backward()
 
     def _setup_cudagraph(self) -> None:
         """Capture a reusable CUDA graph for the per-step fwd+bwd+optimizer,
@@ -268,15 +315,13 @@ class QATLoop:
             self._g_router_bias = torch.zeros(
                 self.arch.n_experts, device=self.device)
 
-            # Warmup on a side stream to avoid capturing the default stream's
-            # internal state into the graph memory pool.
-            warmup_stream = torch.cuda.Stream()
-            warmup_stream.wait_stream(torch.cuda.current_stream())
-            with torch.cuda.stream(warmup_stream):
-                for _ in range(3):
-                    self._graph_forward_backward(
-                        self._g_in, self._g_tgt, self._g_mask)
-            torch.cuda.current_stream().wait_stream(warmup_stream)
+            # Warmup on the default stream to create p.grad tensors.
+            # Using a side stream can cause CUDAGeneratorImpl::current_seed
+            # errors during CUDA graph capture.
+            for _ in range(3):
+                self._graph_forward_backward(
+                    self._g_in, self._g_tgt, self._g_mask)
+            torch.cuda.synchronize()
 
             self.opt.zero_grad(set_to_none=False)
             # Defragment before the graph pool allocation so the contiguous
@@ -320,6 +365,16 @@ class QATLoop:
         ckpt = torch.load(
             path, map_location=self.device, weights_only=False)
         return load_lora_state(self.model, ckpt["lora"])
+
+    def set_ewc(self, ewc: EWCState, lam: float = 1.0) -> None:
+        """Enable EWC continual learning with the given state and lambda."""
+        self._ewc = ewc
+        self._ewc_lambda = lam
+
+    def clear_ewc(self) -> None:
+        """Disable EWC penalty."""
+        self._ewc = None
+        self._ewc_lambda = 0.0
 
     def close(self) -> None:
         self._closed = True

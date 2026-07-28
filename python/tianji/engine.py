@@ -61,6 +61,11 @@ class Engine:
         self._prev_state: Optional[torch.Tensor] = None
         self._closed = False
 
+        # Contrastive loss for positive/negative eval separation.
+        from .distill.contrastive import ContrastiveLoss
+        self._contrastive = ContrastiveLoss(temperature=0.07)
+        self._contrastive_weight = 0.1  # weight of contrastive loss vs LM loss
+
         # Pre-allocate frame arena for zero-allocation hot loop.
         L = max(2, int(eng_cfg.seq_len))
         self._buf_inp = torch.zeros(1, L, dtype=torch.long, device=self.device)
@@ -206,6 +211,57 @@ class Engine:
             },
             path,
         )
+
+    def step_contrastive(
+        self, pos_texts: list[str], neg_texts: list[str]
+    ) -> float:
+        """Train contrastive loss on positive vs negative text pairs.
+
+        Positive texts are Claude Code agent sessions; negative texts are
+        public coding data. The contrastive loss operates on pooled hidden
+        states and is trained jointly with the standard LM loss.
+
+        Returns:
+            Contrastive loss value.
+        """
+        if not pos_texts or not neg_texts:
+            return 0.0
+
+        # Encode and pool positive samples
+        pos_embeddings = []
+        for text in pos_texts[:16]:  # cap at 16 to stay within VRAM
+            if not text or not text.strip():
+                continue
+            out = encode(text, self.vocab, parse_ast=False)
+            ids = self._prepare_ids(out.ids)
+            t = torch.tensor(
+                ids, dtype=torch.long, device=self.device
+            ).unsqueeze(0)
+            state = self._agent_state(t)
+            pos_embeddings.append(state)
+
+        # Encode and pool negative samples
+        neg_embeddings = []
+        for text in neg_texts[:16]:
+            if not text or not text.strip():
+                continue
+            out = encode(text, self.vocab, parse_ast=False)
+            ids = self._prepare_ids(out.ids)
+            t = torch.tensor(
+                ids, dtype=torch.long, device=self.device
+            ).unsqueeze(0)
+            state = self._agent_state(t)
+            neg_embeddings.append(state)
+
+        if not pos_embeddings or not neg_embeddings:
+            return 0.0
+
+        pos_t = torch.cat(pos_embeddings, dim=0)
+        neg_t = torch.cat(neg_embeddings, dim=0)
+
+        loss = self._contrastive(pos_t, neg_t)
+        (self._contrastive_weight * loss).backward()
+        return float(loss.item())
 
     def load_training_state(self, path: str) -> None:
         ck = torch.load(path, map_location=self.device, weights_only=False)

@@ -50,7 +50,7 @@ def cmd_demo(args):
     ids = torch.randint(0, vocab.size, (2, 8))
     if dev == "cuda":
         ids = ids.cuda()
-    res = qat.step(ids, ids.roll(-1, dims=1), source="synthetic")
+    res, _next = qat.step(ids, ids.roll(-1, dims=1), source="synthetic")
     print(f"[demo] step loss={res.loss:.4f} kd={res.kd_loss:.4f} vram={res.vram_used_bytes} bytes")
     qat.close()
     print("[demo] ok")

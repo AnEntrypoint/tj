@@ -69,6 +69,17 @@ def _lower_priority() -> None:
         pass
 
 
+def _is_long_window(since: str) -> bool:
+    """Return True if the since window is large enough to need --full-history."""
+    import re
+    m = re.match(r"(\d+)\s*([smhdw])", since.lower())
+    if not m:
+        return False
+    n, unit = int(m.group(1)), m.group(2)
+    seconds = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}.get(unit, 0)
+    return n * seconds > 7 * 86400  # > 7 days
+
+
 def _since_for_step(step: int, start_step: int, base_since: str) -> str:
     """Window to fetch for ``step``.
 
@@ -111,7 +122,12 @@ def _collect_ccsniff_rows(since: str, limit: int, seen: set, project: str = None
         is_npx = cmd[0].endswith("npx") or cmd[0].endswith("npx.cmd")
         if is_npx:
             cmd += ["--yes", "ccsniff@latest"]
-        cmd += ["--json", "--full-history", "--since", since, "--limit", str(limit)]
+        # Only use --full-history for large windows (>7d); for short
+        # windows the default 500-event cap is sufficient and much faster.
+        _use_full = _is_long_window(since)
+        cmd += ["--json", "--since", since, "--limit", str(limit)]
+        if _use_full:
+            cmd.append("--full-history")
         if project:
             cmd += ["--project", project]
         with open(tmp, "w", encoding="utf-8") as fh:

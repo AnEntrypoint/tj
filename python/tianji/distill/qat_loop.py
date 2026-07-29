@@ -266,11 +266,15 @@ class QATLoop:
         the GPU's 6 GB budget at dim=1024.  The graph reads state from
         ``_g_state_in_tuple`` and writes output state to ``_g_state_out``
         so the caller can copy out->in without autograd in-place errors.
+
+        AMP autocast is disabled during graph capture (the capture itself
+        triggers CUDAGeneratorImpl::current_seed errors with autocast on).
+        The graph runs in fp32 which is fine for the cudagraph path — the
+        speedup from graph replay outweighs the precision loss.
         """
         self.opt.zero_grad()
-        with torch.amp.autocast("cuda", enabled=self._amp_dtype is not None, dtype=self._amp_dtype):
-            logits, aux, next_states = self.model(
-                inp, self._g_state_in_tuple, router_bias=self._g_router_bias)
+        logits, aux, next_states = self.model(
+            inp, self._g_state_in_tuple, router_bias=self._g_router_bias)
         if next_states is not None:
             for i, ns in enumerate(next_states):
                 self._g_state_out[i].copy_(ns)
@@ -278,9 +282,8 @@ class QATLoop:
             logits.view(-1, self.vocab_size), tgt.view(-1), reduction="none")
         m = mask.view(-1)
         ce = (ce * m).sum() / m.sum().clamp(min=1)
-        with torch.amp.autocast("cuda", enabled=self._amp_dtype is not None, dtype=self._amp_dtype):
-            with torch.no_grad():
-                teacher_logits = self.teacher(inp)
+        with torch.no_grad():
+            teacher_logits = self.teacher(inp)
         kd = kd_loss(logits, teacher_logits.detach(), T=2.0)
         self._g_kd.copy_(kd.detach())
         self._g_aux.copy_(aux.detach())
@@ -315,17 +318,20 @@ class QATLoop:
             self._g_router_bias = torch.zeros(
                 self.arch.n_experts, device=self.device)
 
+            # Set deterministic seeds before warmup + capture to avoid
+            # CUDAGeneratorImpl::current_seed errors during graph capture.
+            _saved_cpu_rng = torch.get_rng_state()
+            _saved_cuda_rng = torch.cuda.get_rng_state()
+            torch.manual_seed(42)
+            torch.cuda.manual_seed(42)
+
             # Warmup on the default stream to create p.grad tensors.
-            # Using a side stream can cause CUDAGeneratorImpl::current_seed
-            # errors during CUDA graph capture.
             for _ in range(3):
                 self._graph_forward_backward(
                     self._g_in, self._g_tgt, self._g_mask)
             torch.cuda.synchronize()
 
             self.opt.zero_grad(set_to_none=False)
-            # Defragment before the graph pool allocation so the contiguous
-            # memory the graph requires actually fits.
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
 
@@ -334,6 +340,11 @@ class QATLoop:
                 self._graph_forward_backward(
                     self._g_in, self._g_tgt, self._g_mask)
             self._graph = g
+
+            # Restore original RNG state.
+            torch.set_rng_state(_saved_cpu_rng)
+            torch.cuda.set_rng_state(_saved_cuda_rng)
+
             print(
                 "[qat] CUDA graph captured (stateful cudagraphs enabled)",
                 file=sys.stderr, flush=True)

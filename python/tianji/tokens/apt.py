@@ -153,10 +153,14 @@ def embed(out: EncodeOut, vocab: Vocab) -> np.ndarray:
 
 
 def decode(ids, vocab: Vocab) -> str:
+    """Decode token IDs back to text, filtering padding placeholder tokens."""
     out = []
     for i in ids:
-        if 0 <= i < len(vocab.tokens):
-            out.append(vocab.tokens[i])
-        else:
-            out.append("")
+        if not (0 <= i < len(vocab.tokens)):
+            continue
+        tok = vocab.tokens[i]
+        # Skip padding placeholders (\\x01NNN) that aren't real tokens.
+        if tok.startswith("\x01"):
+            continue
+        out.append(tok)
     return "".join(out)

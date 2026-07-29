@@ -42,10 +42,13 @@ def _vram_bytes_used(qat: QATLoop) -> int:
 
 
 def cmd_demo(args):
-    vocab = _default_vocab(dim=args.dim, ast_dim=args.ast_dim)
-    arch = _default_arch(dim=args.dim, n_layers=args.layers)
-    dev = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
-    qat = QATLoop(_default_qat(device=dev, dim=args.dim), arch, vocab_size=vocab.size)
+    dim = getattr(args, "dim", 16)
+    ast_dim = getattr(args, "ast_dim", 8)
+    layers = getattr(args, "layers", 27)
+    vocab = _default_vocab(dim=dim, ast_dim=ast_dim)
+    arch = _default_arch(dim=dim, n_layers=layers)
+    dev = getattr(args, "device", None) or ("cuda" if torch.cuda.is_available() else "cpu")
+    qat = QATLoop(_default_qat(device=dev, dim=dim), arch, vocab_size=vocab.size)
     print(f"[demo] built model with vocab_size={vocab.size}, layers={arch.n_layers}, device={dev}")
     ids = torch.randint(0, vocab.size, (2, 8))
     if dev == "cuda":
@@ -116,6 +119,9 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pd = sub.add_parser("demo")
+    pd.add_argument("--dim", type=int, default=16, help="model dimension")
+    pd.add_argument("--ast-dim", type=int, default=8, help="AST embedding dimension")
+    pd.add_argument("--layers", type=int, default=27, help="number of layers")
     pd.add_argument("--device", default=None, choices=["cpu", "cuda"],
                     help="device (default: auto-detect)")
 

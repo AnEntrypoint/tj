@@ -35,7 +35,10 @@ class QATConfig:
     lr: float = 1e-3
     kd_alpha: float = 0.5
     seq_len: int = 512
-    precision: str = "fp16"  # "fp32", "fp16", "bf16"
+    precision: str = "fp16"     # "fp32", "fp16", "bf16"
+    warmup_steps: int = 100     # linear LR warmup
+    grad_clip: float = 1.0      # gradient clipping norm (0 = disabled)
+    lr_decay: float = 0.1       # cosine decay to this fraction of initial LR
 
 
 @dataclass
@@ -82,6 +85,15 @@ class QATLoop:
             [p for p in self.model.parameters() if p.requires_grad],
             lr=cfg.lr, capturable=(self.device.type == "cuda"))
         self.kd_enabled = not isinstance(self.teacher, StubTeacher)
+        self._step_count = 0
+        self._lr_scheduler = None
+        if cfg.warmup_steps > 0 or cfg.lr_decay < 1.0:
+            from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+            warmup = LinearLR(self.opt, start_factor=0.01, end_factor=1.0,
+                              total_iters=cfg.warmup_steps)
+            cosine = CosineAnnealingLR(self.opt, T_max=10000, eta_min=cfg.lr * cfg.lr_decay)
+            self._lr_scheduler = SequentialLR(self.opt, schedulers=[warmup, cosine],
+                                               milestones=[cfg.warmup_steps])
         self.kd_alpha = cfg.kd_alpha
         self._model_bytes = sum(
             p.numel() * p.element_size() for p in self.model.parameters())
@@ -204,6 +216,13 @@ class QATLoop:
                 self._scaler.update()
             else:
                 self.opt.step()
+            if self.cfg.grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(
+                    [p for p in self.model.parameters() if p.requires_grad],
+                    self.cfg.grad_clip)
+            self._step_count += 1
+            if self._lr_scheduler is not None:
+                self._lr_scheduler.step()
             loss = float(self._g_loss.item())
             kd = float(self._g_kd.item())
             aux = float(self._g_aux.item())
@@ -247,6 +266,13 @@ class QATLoop:
         else:
             loss.backward()
             self.opt.step()
+        if self.cfg.grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(
+                [p for p in self.model.parameters() if p.requires_grad],
+                self.cfg.grad_clip)
+        self._step_count += 1
+        if self._lr_scheduler is not None:
+            self._lr_scheduler.step()
         self.replay.push(
             input_ids.detach().cpu(), target_ids.detach().cpu())
         return (QATStepResult(

@@ -87,6 +87,24 @@ class Generator:
         self.device = qat.device
         self._buf: torch.Tensor | None = None
         self._mamba_state: Tuple[torch.Tensor, ...] | None = None
+        self._engine = None  # set by StateAwareGenerator
+
+    def _ensure_buf(self, n: int) -> torch.Tensor:
+        if self._buf is None or n > self._buf.shape[1]:
+            self._buf = torch.zeros(
+                1, n + self.cfg.max_tokens, dtype=torch.long, device=self.device)
+        return self._buf
+
+    def _next_token(self, logits: torch.Tensor) -> int:
+        """Sample next token using configured sampling strategy."""
+        return _sample_token(logits, self.cfg.sampling)
+    def __init__(self, qat, cfg: GenerateConfig):
+        self.qat = qat
+        self.cfg = cfg
+        self.model = qat.model
+        self.device = qat.device
+        self._buf: torch.Tensor | None = None
+        self._mamba_state: Tuple[torch.Tensor, ...] | None = None
 
     def _ensure_buf(self, n: int) -> torch.Tensor:
         if self._buf is None or n > self._buf.shape[1]:
@@ -134,3 +152,41 @@ class Generator:
     def reset_state(self) -> None:
         """Clear cached Mamba-2 state for a new generation."""
         self._mamba_state = None
+
+
+class StateAwareGenerator(Generator):
+    """Generator that uses state head predictions to bias token output.
+
+    The state head predicts the next event kind (tool_call, cot, etc.).
+    This biases the token distribution toward special tokens matching
+    the predicted kind, making outputs more agent-like.
+    """
+    def __init__(self, qat, cfg: GenerateConfig, engine=None):
+        super().__init__(qat, cfg)
+        self._engine = engine
+        self._kind_to_bias: dict[int, list[int]] = {}
+        if engine is not None:
+            from ..tokens.apt import SPECIAL_IDS
+            from ..state.transition import EVENT_KINDS, KIND_TO_IDX
+            kind_tags = {
+                "system_prompt": ["<system>"],
+                "cot": ["<cot>"],
+                "tool_call": ["<tool_call>"],
+                "tool_result": ["<bash_output>"],
+                "context": [],
+                "exec_trace": [],
+                "trace_end": [],
+            }
+            for kind, tags in kind_tags.items():
+                if kind in KIND_TO_IDX:
+                    idx = KIND_TO_IDX[kind]
+                    self._kind_to_bias[idx] = [SPECIAL_IDS[t] for t in tags if t in SPECIAL_IDS]
+
+    def _next_token(self, logits: torch.Tensor) -> int:
+        if self._engine is not None and self._engine._prev_state is not None:
+            action = self._engine.predict_next_kind(self._engine._prev_state)
+            bias_ids = self._kind_to_bias.get(action, [])
+            for tid in bias_ids:
+                if tid < logits.shape[-1]:
+                    logits[..., tid] += 2.0
+        return _sample_token(logits, self.cfg.sampling)

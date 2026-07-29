@@ -24,7 +24,7 @@ from pathlib import Path
 import torch
 
 from tianji import Engine, EngineConfig
-from tianji.tokens.apt import Vocab
+from tianji.tokens.apt import Vocab, encode
 from tianji.arch.hybrid import HybridConfig
 from tianji.distill.qat_loop import QATConfig
 from tianji.ingest.ccsniff import ingest_ccsniff_stream

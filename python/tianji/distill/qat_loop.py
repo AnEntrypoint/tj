@@ -216,13 +216,13 @@ class QATLoop:
                 self._scaler.update()
             else:
                 self.opt.step()
+            self._step_count += 1
+            if self._lr_scheduler is not None:
+                self._lr_scheduler.step()
             if self.cfg.grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(
                     [p for p in self.model.parameters() if p.requires_grad],
                     self.cfg.grad_clip)
-            self._step_count += 1
-            if self._lr_scheduler is not None:
-                self._lr_scheduler.step()
             loss = float(self._g_loss.item())
             kd = float(self._g_kd.item())
             aux = float(self._g_aux.item())

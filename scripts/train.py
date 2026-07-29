@@ -46,6 +46,29 @@ _FALLBACK_CORPUS = [
     "<diff>--- a\n+++ b\n</diff>",
 ]
 
+# Inline negative eval corpus: generic non-agent code that the model
+# should learn to distinguish from Claude Code agent behavior.
+_NEGATIVE_CORPUS = [
+    # Generic boilerplate
+    "import os\nimport sys\n\ndef main():\n    pass\n\nif __name__ == '__main__':\n    main()",
+    "class Foo:\n    def __init__(self, x):\n        self.x = x\n    def bar(self):\n        return self.x * 2",
+    "for i in range(10):\n    print(i)\nprint('done')",
+    "try:\n    x = 1 / 0\nexcept ZeroDivisionError:\n    pass",
+    "with open('file.txt') as f:\n    data = f.read()",
+    "x = [1, 2, 3]\ny = [4, 5, 6]\nz = [a + b for a, b in zip(x, y)]",
+    "def foo(a, b, c=0, *args, **kwargs):\n    return a + b + c",
+    "import json\nimport re\nimport time\nfrom pathlib import Path",
+    # Non-agent text
+    "The quick brown fox jumps over the lazy dog",
+    "Lorem ipsum dolor sit amet consectetur adipiscing elit",
+    "def test_addition():\n    assert 1 + 1 == 2\n    assert 2 + 2 == 4",
+    "if __name__ == '__main__':\n    import argparse\n    p = argparse.ArgumentParser()\n    p.add_argument('--foo')\n    args = p.parse_args()",
+    "def fibonacci(n):\n    a, b = 0, 1\n    for _ in range(n):\n        yield a\n        a, b = b, a + b",
+    "class Singleton:\n    _instance = None\n    def __new__(cls):\n        if cls._instance is None:\n            cls._instance = super().__new__(cls)\n        return cls._instance",
+    "def memoize(fn):\n    cache = {}\n    def wrapper(*args):\n        if args not in cache:\n            cache[args] = fn(*args)\n        return cache[args]\n    return wrapper",
+    "def quicksort(arr):\n    if len(arr) <= 1:\n        return arr\n    pivot = arr[0]\n    left = [x for x in arr[1:] if x <= pivot]\n    right = [x for x in arr[1:] if x > pivot]\n    return quicksort(left) + [pivot] + quicksort(right)",
+]
+
 _CCSNIIF_BIN = os.environ.get("CCSNIIF_BIN", "npx.cmd" if os.name == "nt" else "npx")
 
 # Wall-clock time (seconds) of the most recent ccsniff fetch. Used to make
@@ -131,10 +154,18 @@ def _collect_ccsniff_rows(since: str, limit: int, seen: set, project: str = None
         if project:
             cmd += ["--project", project]
         with open(tmp, "w", encoding="utf-8") as fh:
-            r = subprocess.run(
-                cmd,
-                stdout=fh, stderr=subprocess.DEVNULL, shell=is_npx,
-            )
+            try:
+                r = subprocess.run(
+                    cmd,
+                    stdout=fh, stderr=subprocess.DEVNULL, shell=is_npx,
+                    timeout=120,  # 2-minute timeout
+                )
+            except subprocess.TimeoutExpired:
+                print(f"[train] ccsniff collect timed out", file=sys.stderr)
+                return [], 0
+            except Exception as e:
+                print(f"[train] ccsniff subprocess error: {e}", file=sys.stderr)
+                return [], 0
         if r.returncode != 0:
             print(f"[train] ccsniff collect failed (rc={r.returncode})", file=sys.stderr)
             return [], 0
@@ -323,8 +354,9 @@ def main():
 
     print("[train] ccwatch monitor: run `npx ccwatch` in another terminal to watch cost/quota live")
 
-    # ── HF negative-eval dataset ──────────────────────────────────────
+    # ── Negative eval: HF datasets or inline corpus ─────────────────
     hf_texts = None
+    neg_texts = list(_NEGATIVE_CORPUS)  # always available inline
     if args.hf_dataset and _HF_OK:
         try:
             cfg = _known_dataset(args.hf_dataset)
@@ -336,6 +368,8 @@ def main():
             print(f"[train] HF negative eval: {args.hf_dataset} ({cfg.path})")
         except Exception as e:
             print(f"[train] HF dataset unavailable: {e}", file=sys.stderr)
+    if hf_texts is None:
+        print(f"[train] using inline negative eval corpus ({len(neg_texts)} samples)")
 
     losses = []
     acc_correct = 0
@@ -360,23 +394,24 @@ def main():
         losses.append(loss)
         acc_str = f"{acc_correct}/{acc_total} ({100.0*acc_correct/max(1,acc_total):.1f}%)" if acc_total else "n/a"
         hf_str = ""
+        # Use HF dataset if available, else inline negative corpus
+        neg_batch = []
         if hf_texts is not None:
-            # Train on negative HF samples: collect a small batch of public
-            # code and run a forward pass with negative-source routing.
-            hf_batch = []
             for _ in range(min(args.batch, 32)):
                 try:
-                    hf_batch.append(next(hf_texts))
+                    neg_batch.append(next(hf_texts))
                 except StopIteration:
                     break
-            if hf_batch:
-                hf_loss = _train_on_hf_texts(hf_batch)
-                hf_str = f" hf_neg_loss={hf_loss:.4f}"
-                # Contrastive loss: pull positive (ccsniff) and push negative (HF)
-                pos_texts = [row.get("text") or "" for row in rows[:16] if row.get("text")]
-                if pos_texts:
-                    c_loss = _ENGINE.step_contrastive(pos_texts, hf_batch[:16])
-                    hf_str += f" contrastive={c_loss:.4f}"
+        else:
+            import random as _rnd
+            neg_batch = _rnd.sample(neg_texts, min(8, len(neg_texts)))
+        if neg_batch:
+            hf_loss = _train_on_hf_texts(neg_batch)
+            hf_str = f" hf_neg_loss={hf_loss:.4f}"
+            pos_texts = [row.get("text") or "" for row in rows[:16] if row.get("text")]
+            if pos_texts:
+                c_loss = _ENGINE.step_contrastive(pos_texts, neg_batch[:16])
+                hf_str += f" contrastive={c_loss:.4f}"
         print(f"[train] step {step}: since={since} rows={len(rows)} qat_loss={loss:.4f} "
               f"state_acc={acc_str}{hf_str} vram={_ENGINE.qat._vram()}B")
 

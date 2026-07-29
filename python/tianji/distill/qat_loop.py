@@ -87,6 +87,7 @@ class QATLoop:
         self.kd_enabled = not isinstance(self.teacher, StubTeacher)
         self._step_count = 0
         self._lr_scheduler = None
+        self._lr_warmed_up = False
         if cfg.warmup_steps > 0 or cfg.lr_decay < 1.0:
             from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
             warmup = LinearLR(self.opt, start_factor=0.01, end_factor=1.0,
@@ -217,8 +218,9 @@ class QATLoop:
             else:
                 self.opt.step()
             self._step_count += 1
-            if self._lr_scheduler is not None:
+            if self._lr_scheduler is not None and self._lr_warmed_up:
                 self._lr_scheduler.step()
+            self._lr_warmed_up = True
             if self.cfg.grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(
                     [p for p in self.model.parameters() if p.requires_grad],

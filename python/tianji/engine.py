@@ -99,6 +99,8 @@ class Engine:
         text = self._frame_text(frame)
         out = encode(text, self.vocab, parse_ast=True)
         ids = self._prepare_ids(out.ids)
+        if self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
         t = torch.tensor(ids, dtype=torch.long, device=self.device)
         # Train over the whole frame in chunks of exactly ``seq_len`` tokens.
         # Mamba-2 state is carried between chunks within a frame (teacher-forced

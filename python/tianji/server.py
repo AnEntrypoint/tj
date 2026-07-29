@@ -51,7 +51,7 @@ _vocab: Optional[Vocab] = None
 _generator: Optional[Generator] = None
 
 
-def _build_vocab() -> Vocab:
+def _build_vocab(dim: int = 16, ast_dim: int = 8, target_size: int = 512) -> Vocab:
     corpus = [
         "def fib(n): return n",
         "<tool_call>{}</tool_call>",
@@ -66,11 +66,11 @@ def _build_vocab() -> Vocab:
         "return",
         "if True:",
     ] * 8
-    return Vocab.build(corpus, target_size=512, dim=16, ast_dim=8)
+    return Vocab.build(corpus, target_size=target_size, dim=dim, ast_dim=ast_dim)
 
 
 def load_model(device: str = "cpu", ckpt_path: Optional[str] = None,
-               reload: bool = False) -> dict:
+               reload: bool = False, dim: int = 16, vocab_size: int = 512) -> dict:
     global _loop, _vocab, _generator
     if _loop is not None and not reload:
         return {"status": "already loaded", "device": device}
@@ -80,8 +80,8 @@ def load_model(device: str = "cpu", ckpt_path: Optional[str] = None,
         _loop = None
         _generator = None
 
-    _vocab = _build_vocab()
-    arch = HybridConfig(dim=16, n_layers=27)
+    _vocab = _build_vocab(dim=dim, target_size=vocab_size)
+    arch = HybridConfig(dim=dim, n_layers=27)
     qat_cfg = QATConfig(device=device, lora_rank=4, vram_bytes=4 * 1024 ** 3)
     _loop = QATLoop(qat_cfg, arch, vocab_size=_vocab.size)
     _generator = Generator(_loop, GenerateConfig(max_tokens=64, paged_kv_blocks=8))
@@ -425,9 +425,12 @@ def serve(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--device", default=_default_dev, choices=["cpu", "cuda"])
     ap.add_argument("--ckpt", default=None, help="path to LoRA checkpoint .pt")
     ap.add_argument("--reload", action="store_true", help="hot-reload (dev only)")
+    ap.add_argument("--dim", type=int, default=16, help="model dimension")
+    ap.add_argument("--vocab-size", type=int, default=512, help="vocabulary size")
     args = ap.parse_args(argv)
 
-    load_model(device=args.device, ckpt_path=args.ckpt)
+    load_model(device=args.device, ckpt_path=args.ckpt, dim=args.dim,
+               vocab_size=args.vocab_size)
 
     app = _make_app()
     if app is None:

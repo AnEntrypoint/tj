@@ -14,7 +14,7 @@ from .distill.qat_loop import QATConfig, QATLoop
 from .caps import ResourceBudget
 
 
-def _default_vocab():
+def _default_vocab(dim=16, ast_dim=8):
     lines = [
         '<tool_call>{"name":"edit","args":{"path":"a.py"}}</tool_call>',
         "<bash_output>ok</bash_output>",
@@ -23,7 +23,7 @@ def _default_vocab():
         "<cot>plan</cot>",
         "<diff>--- a\n+++ b\n</diff>",
     ] * 4
-    return Vocab.build(lines, target_size=128, dim=16, ast_dim=8)
+    return Vocab.build(lines, target_size=128, dim=dim, ast_dim=ast_dim)
 
 
 def _default_arch(dim=16, n_layers=27):
@@ -42,10 +42,10 @@ def _vram_bytes_used(qat: QATLoop) -> int:
 
 
 def cmd_demo(args):
-    vocab = _default_vocab()
-    arch = _default_arch()
+    vocab = _default_vocab(dim=args.dim, ast_dim=args.ast_dim)
+    arch = _default_arch(dim=args.dim, n_layers=args.layers)
     dev = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
-    qat = QATLoop(_default_qat(device=dev), arch, vocab_size=vocab.size)
+    qat = QATLoop(_default_qat(device=dev, dim=args.dim), arch, vocab_size=vocab.size)
     print(f"[demo] built model with vocab_size={vocab.size}, layers={arch.n_layers}, device={dev}")
     ids = torch.randint(0, vocab.size, (2, 8))
     if dev == "cuda":
@@ -57,10 +57,10 @@ def cmd_demo(args):
 
 
 def cmd_infer(args):
-    vocab = _default_vocab()
+    vocab = _default_vocab(dim=args.dim, ast_dim=args.ast_dim)
     arch = _default_arch(dim=args.dim, n_layers=args.layers)
     dev = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
-    qat = QATLoop(_default_qat(device=dev), arch, vocab_size=vocab.size)
+    qat = QATLoop(_default_qat(device=dev, dim=args.dim), arch, vocab_size=vocab.size)
     from .infer.generator import Generator, GenerateConfig
     prompt = [1, 2, 3, 4]
     gen = Generator(qat, GenerateConfig(max_tokens=args.n, paged_kv_blocks=8))
@@ -141,6 +141,8 @@ def main(argv=None):
     ps.add_argument("--device", default="cuda", choices=["cpu", "cuda"])
     ps.add_argument("--ckpt", default=None, help="path to LoRA checkpoint .pt")
     ps.add_argument("--reload", action="store_true", help="hot-reload (dev only)")
+    ps.add_argument("--dim", type=int, default=16, help="model dimension")
+    ps.add_argument("--vocab-size", type=int, default=512, help="vocabulary size")
 
     args = p.parse_args(argv)
     dispatch = {
@@ -151,9 +153,11 @@ def main(argv=None):
     }
     if args.cmd == "serve":
         from .server import serve
-        return serve(argv=[getattr(args, "host", "0.0.0.0"),
+        return serve(argv=["--host", getattr(args, "host", "0.0.0.0"),
                           "--port", str(getattr(args, "port", 8080)),
-                          "--device", getattr(args, "device", "cpu")] +
+                          "--device", getattr(args, "device", "cpu"),
+                          "--dim", str(getattr(args, "dim", 16)),
+                          "--vocab-size", str(getattr(args, "vocab_size", 128))] +
                          (["--ckpt", args.ckpt] if args.ckpt else []) +
                          (["--reload"] if args.reload else []))
     dispatch[args.cmd](args)

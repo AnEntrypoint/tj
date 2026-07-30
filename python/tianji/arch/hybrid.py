@@ -50,6 +50,7 @@ class HybridConfig:
     n_active: int = 2
     shared_experts: int = 1
     expert_hidden: int = 32
+    quantize: bool = False  # int4 quantization for MoE + projections
 
 
 class MambaBlock(nn.Module):
@@ -72,7 +73,8 @@ class MLAMoELayer(nn.Module):
                                                       head_dim=cfg.head_dim))
         self.norm2 = RMSNorm(cfg.dim)
         self.moe = MoELayer(MoEConfig(dim=cfg.dim, n_experts=cfg.n_experts, n_active=cfg.n_active,
-                                      shared_experts=cfg.shared_experts, expert_hidden=cfg.expert_hidden))
+                                      shared_experts=cfg.shared_experts, expert_hidden=cfg.expert_hidden),
+                            quantize=cfg.quantize)
 
     def forward(self, x, state=None, router_bias=None):
         a, _ = self.attn(self.norm1(x))

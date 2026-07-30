@@ -48,34 +48,97 @@ _FALLBACK_CORPUS = [
 
 # Inline negative eval corpus: generic non-agent code that the model
 # should learn to distinguish from Claude Code agent behavior.
-_NEGATIVE_CORPUS = [
-    # Generic boilerplate
-    "import os\nimport sys\n\ndef main():\n    pass\n\nif __name__ == '__main__':\n    main()",
-    "class Foo:\n    def __init__(self, x):\n        self.x = x\n    def bar(self):\n        return self.x * 2",
-    "for i in range(10):\n    print(i)\nprint('done')",
-    "try:\n    x = 1 / 0\nexcept ZeroDivisionError:\n    pass",
-    "with open('file.txt') as f:\n    data = f.read()",
-    "x = [1, 2, 3]\ny = [4, 5, 6]\nz = [a + b for a, b in zip(x, y)]",
-    "def foo(a, b, c=0, *args, **kwargs):\n    return a + b + c",
-    "import json\nimport re\nimport time\nfrom pathlib import Path",
-    "The quick brown fox jumps over the lazy dog",
-    "Lorem ipsum dolor sit amet consectetur adipiscing elit",
-    "def test_addition():\n    assert 1 + 1 == 2\n    assert 2 + 2 == 4",
-    "if __name__ == '__main__':\n    import argparse\n    p = argparse.ArgumentParser()\n    p.add_argument('--foo')\n    args = p.parse_args()",
-    "def fibonacci(n):\n    a, b = 0, 1\n    for _ in range(n):\n        yield a\n        a, b = b, a + b",
-    "class Singleton:\n    _instance = None\n    def __new__(cls):\n        if cls._instance is None:\n            cls._instance = super().__new__(cls)\n        return cls._instance",
-    "def memoize(fn):\n    cache = {}\n    def wrapper(*args):\n        if args not in cache:\n            cache[args] = fn(*args)\n        return cache[args]\n    return wrapper",
-    "def quicksort(arr):\n    if len(arr) <= 1:\n        return arr\n    pivot = arr[0]\n    left = [x for x in arr[1:] if x <= pivot]\n    right = [x for x in arr[1:] if x > pivot]\n    return quicksort(left) + [pivot] + quicksort(right)",
-    # More diverse code patterns
-    "import asyncio\n\nasync def fetch(url):\n    async with aiohttp.ClientSession() as s:\n        async with s.get(url) as r:\n            return await r.text()",
-    "from dataclasses import dataclass\nfrom typing import Optional, List\n\n@dataclass\nclass Config:\n    name: str\n    values: List[int]\n    enabled: bool = True",
-    "def retry(max_attempts=3, delay=1.0):\n    def decorator(fn):\n        def wrapper(*a, **kw):\n            for i in range(max_attempts):\n                try:\n                    return fn(*a, **kw)\n                except Exception:\n                    if i == max_attempts - 1:\n                        raise\n                    time.sleep(delay)\n        return wrapper\n    return decorator",
-    "import threading\n\nclass ThreadPool:\n    def __init__(self, n):\n        self.n = n\n        self.queue = []\n        self.lock = threading.Lock()\n    def submit(self, fn, *args):\n        with self.lock:\n            self.queue.append((fn, args))",
-    "def parse_jsonl(path):\n    results = []\n    with open(path, 'r', encoding='utf-8') as f:\n        for line in f:\n            line = line.strip()\n            if line:\n                results.append(json.loads(line))\n    return results",
-    "import hashlib\n\ndef hash_file(path, algo='sha256'):\n    h = hashlib.new(algo)\n    with open(path, 'rb') as f:\n        for chunk in iter(lambda: f.read(8192), b''):\n            h.update(chunk)\n    return h.hexdigest()",
-    "def flatten(nested):\n    for item in nested:\n        if isinstance(item, (list, tuple)):\n            yield from flatten(item)\n        else:\n            yield item",
-    "import sqlite3\n\ndef query_db(path, sql, params=()):\n    with sqlite3.connect(path) as conn:\n        conn.row_factory = sqlite3.Row\n        return [dict(row) for row in conn.execute(sql, params)]",
-]
+def _build_negative_corpus() -> list[str]:
+    """Build a rich negative eval corpus from project files + diverse patterns.
+    Returns 100+ code samples covering common programming patterns."""
+    import glob as _glob
+    samples = []
+    # 1. Scan project Python files for real code
+    for root, dirs, fnames in os.walk(os.path.join(os.path.dirname(__file__), '..', 'python')):
+        dirs[:] = [d for d in dirs if d not in ('__pycache__', '.pytest_cache', 'tests', '.tianji_ckpt')]
+        for f in fnames:
+            if f.endswith('.py'):
+                try:
+                    with open(os.path.join(root, f), encoding='utf-8') as fh:
+                        content = fh.read()[:600]
+                    if len(content) > 50:
+                        samples.append(content)
+                except Exception:
+                    pass
+    # 2. Diverse code patterns covering all common constructs
+    patterns = [
+        # Functions
+        "def add(a, b):\n    return a + b",
+        "def multiply(x, y):\n    result = x * y\n    return result",
+        "def factorial(n):\n    if n <= 1:\n        return 1\n    return n * factorial(n - 1)",
+        "def binary_search(arr, target):\n    lo, hi = 0, len(arr) - 1\n    while lo <= hi:\n        mid = (lo + hi) // 2\n        if arr[mid] == target:\n            return mid\n        elif arr[mid] < target:\n            lo = mid + 1\n        else:\n            hi = mid - 1\n    return -1",
+        "def is_prime(n):\n    if n < 2: return False\n    for i in range(2, int(n**0.5) + 1):\n        if n % i == 0: return False\n    return True",
+        "def merge_sort(arr):\n    if len(arr) <= 1: return arr\n    mid = len(arr) // 2\n    left = merge_sort(arr[:mid])\n    right = merge_sort(arr[mid:])\n    return merge(left, right)",
+        "def gcd(a, b):\n    while b:\n        a, b = b, a % b\n    return a",
+        "def lru_cache(maxsize=128):\n    def decorator(fn):\n        cache = {}\n        def wrapper(*args):\n            if args in cache:\n                return cache[args]\n            result = fn(*args)\n            cache[args] = result\n            if len(cache) > maxsize:\n                cache.pop(next(iter(cache)))\n            return result\n        return wrapper\n    return decorator",
+        # Classes
+        "class Node:\n    def __init__(self, val):\n        self.val = val\n        self.next = None",
+        "class Stack:\n    def __init__(self):\n        self.items = []\n    def push(self, x):\n        self.items.append(x)\n    def pop(self):\n        return self.items.pop()\n    def peek(self):\n        return self.items[-1]\n    def is_empty(self):\n        return len(self.items) == 0",
+        "class Queue:\n    def __init__(self):\n        self.in_stack = []\n        self.out_stack = []\n    def enqueue(self, x):\n        self.in_stack.append(x)\n    def dequeue(self):\n        if not self.out_stack:\n            while self.in_stack:\n                self.out_stack.append(self.in_stack.pop())\n        return self.out_stack.pop()",
+        # Async/IO
+        "import asyncio\n\nasync def fetch_url(url):\n    async with aiohttp.ClientSession() as session:\n        async with session.get(url) as resp:\n            return await resp.text()\n\nasync def main():\n    urls = ['http://a.com', 'http://b.com']\n    tasks = [fetch_url(u) for u in urls]\n    results = await asyncio.gather(*tasks)\n    return results",
+        # File I/O
+        "with open('data.txt', 'r') as f:\n    lines = f.readlines()\n    cleaned = [line.strip() for line in lines if line.strip()]\n\nwith open('output.txt', 'w') as f:\n    for line in cleaned:\n        f.write(line + '\\n')",
+        # JSON/API
+        "import json\nimport requests\n\nresp = requests.get('https://api.example.com/data')\ndata = resp.json()\nfiltered = [item for item in data['results'] if item['score'] > 0.5]\nprint(json.dumps(filtered, indent=2))",
+        # Error handling
+        "try:\n    result = risky_operation()\nexcept ValueError as e:\n    print(f'Invalid value: {e}')\n    result = None\nexcept Exception as e:\n    print(f'Unexpected: {e}')\n    raise\nfinally:\n    cleanup()",
+        # Context managers
+        "class Timer:\n    def __enter__(self):\n        self.start = time.time()\n        return self\n    def __exit__(self, *args):\n        self.elapsed = time.time() - self.start\n\nwith Timer() as t:\n    do_work()\nprint(f'Took {t.elapsed:.2f}s')",
+        # List comprehensions
+        "squares = [x**2 for x in range(100) if x % 2 == 0]\nevens = [x for x in range(50) if x % 2 == 0]\nmatrix = [[i*j for j in range(10)] for i in range(10)]",
+        # Dict/set operations
+        "counts = {}\nfor item in items:\n    counts[item] = counts.get(item, 0) + 1\ntop = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:10]",
+        "seen = set()\nunique = [x for x in data if x not in seen and not seen.add(x)]",
+        # String manipulation
+        "def slugify(text):\n    return re.sub(r'[^\\w\\s-]', '', text.lower()).strip().replace(' ', '-')",
+        # Decorators
+        "def retry(max_attempts=3):\n    def decorator(fn):\n        def wrapper(*a, **kw):\n            for i in range(max_attempts):\n                try:\n                    return fn(*a, **kw)\n                except Exception:\n                    if i == max_attempts - 1: raise\n                    time.sleep(1)\n        return wrapper\n    return decorator",
+        # Generators
+        "def chunked(iterable, n):\n    for i in range(0, len(iterable), n):\n        yield iterable[i:i+n]",
+        # Type hints
+        "from typing import Optional, List, Dict, Tuple, Union\n\ndef process(data: List[Dict[str, Union[int, str]]]) -> Optional[Tuple[int, str]]:\n    if not data:\n        return None\n    return len(data), data[0].get('name', '')",
+        # Dataclasses
+        "from dataclasses import dataclass, field\nfrom typing import List\n\n@dataclass\nclass User:\n    name: str\n    age: int = 0\n    tags: List[str] = field(default_factory=list)\n    def is_adult(self) -> bool:\n        return self.age >= 18",
+        # SQL
+        "import sqlite3\nconn = sqlite3.connect('app.db')\ncursor = conn.execute('SELECT id, name FROM users WHERE active = 1 ORDER BY created_at DESC LIMIT 10')\nrows = cursor.fetchall()\nconn.close()",
+        # Regex
+        "import re\npattern = re.compile(r'def\\s+(\\w+)\\s*\\(([^)]*)\\)')\nmatches = pattern.findall(source_code)\nfunctions = {name: params for name, params in matches}",
+        # Threading
+        "import threading\nresults = []\nlock = threading.Lock()\ndef worker(start, end):\n    partial = sum(range(start, end))\n    with lock:\n        results.append(partial)\nthreads = [threading.Thread(target=worker, args=(i*100, (i+1)*100)) for i in range(4)]\nfor t in threads: t.start()\nfor t in threads: t.join()",
+        # Argparse
+        "import argparse\nparser = argparse.ArgumentParser()\nparser.add_argument('--input', required=True)\nparser.add_argument('--output', default='out.txt')\nparser.add_argument('--verbose', action='store_true')\nargs = parser.parse_args()",
+        # Math/NumPy
+        "import numpy as np\nx = np.linspace(0, 10, 100)\ny = np.sin(x) * np.exp(-0.1 * x)\nz = np.convolve(y, np.ones(10)/10, mode='same')",
+        # Path operations
+        "from pathlib import Path\nroot = Path('.')\npy_files = list(root.rglob('*.py'))\nfor f in py_files:\n    print(f.relative_to(root))",
+        # Subprocess
+        "import subprocess\nresult = subprocess.run(['git', 'status'], capture_output=True, text=True)\nif result.returncode == 0:\n    print(result.stdout)",
+        # Logging
+        "import logging\nlogging.basicConfig(level=logging.INFO)\nlogger = logging.getLogger(__name__)\nlogger.info('Starting process')\ntry:\n    do_work()\n    logger.info('Completed')\nexcept Exception as e:\n    logger.exception('Failed')",
+        # Collections
+        "from collections import defaultdict, Counter, deque\nfreq = Counter(words)\nadj = defaultdict(list)\nfor a, b in edges:\n    adj[a].append(b)\nqueue = deque([start])",
+        # Itertools
+        "from itertools import combinations, permutations, product\npairs = list(combinations(items, 2))\nperms = list(permutations('abc'))\ngrid = list(product(range(3), repeat=2))",
+        # Functional
+        "from functools import reduce, partial\nresult = reduce(lambda a, b: a * b, range(1, 11))\ndouble = partial(lambda x, y: x * y, 2)\nvalues = list(map(double, range(10)))",
+        # Common non-code text patterns
+        "The quick brown fox jumps over the lazy dog",
+        "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor",
+        "According to the documentation, the function should return a value",
+        "This is a test of the emergency broadcast system",
+        "Please review the following changes and provide feedback",
+    ]
+    samples.extend(patterns)
+    return samples
+
+
+_NEGATIVE_CORPUS = _build_negative_corpus()
 
 _CCSNIIF_BIN = os.environ.get("CCSNIIF_BIN", "npx.cmd" if os.name == "nt" else "npx")
 
@@ -340,7 +403,8 @@ def main():
             seen.add((sid, int(ts)))
         ck = torch.load(state_path, map_location="cpu", weights_only=False)
         vocab = ck["vocab"]
-        arch = HybridConfig(dim=args.dim, n_layers=args.layers)
+        arch = HybridConfig(dim=args.dim, n_layers=args.layers, n_experts=8, n_active=2,
+                            d_inner=args.dim*2, expert_hidden=args.dim*2, quantize=True)
         qat_cfg = QATConfig(device=device, lora_rank=4, vram_bytes=4 * 1024 ** 3,
                             seq_len=args.seq_len, precision=args.precision)
         eng_cfg = EngineConfig(device=device, seq_len=args.seq_len, batch_size=1)
@@ -353,7 +417,8 @@ def main():
         seed_rows, _ = _collect_ccsniff_rows(args.since, min(args.limit, 256), seen, args.project)
         seen.clear()  # seed rows are for vocab only; let the loop train them too
         vocab = _seed_vocab(seed_rows, args.dim, args.ast_dim)
-        arch = HybridConfig(dim=args.dim, n_layers=args.layers)
+        arch = HybridConfig(dim=args.dim, n_layers=args.layers, n_experts=8, n_active=2,
+                            d_inner=args.dim*2, expert_hidden=args.dim*2, quantize=True)
         qat_cfg = QATConfig(device=device, lora_rank=4, vram_bytes=4 * 1024 ** 3,
                             seq_len=args.seq_len, precision=args.precision)
         eng_cfg = EngineConfig(device=device, seq_len=args.seq_len, batch_size=1)

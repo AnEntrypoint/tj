@@ -7,6 +7,8 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
+from ..quant.fakequant import FakeQuantLinear
+
 
 @dataclass
 class MoEConfig:
@@ -18,22 +20,25 @@ class MoEConfig:
 
 
 class _Expert(nn.Module):
-    def __init__(self, dim: int, hidden: int):
+    def __init__(self, dim: int, hidden: int, quantize: bool = False):
         super().__init__()
-        self.fc = nn.Linear(dim, hidden)
-        self.gate = nn.Linear(hidden, dim)
+        _linear = FakeQuantLinear if quantize else nn.Linear
+        self.fc = _linear(dim, hidden)
+        self.gate = _linear(hidden, dim)
 
     def forward(self, x):
         return self.gate(torch.nn.functional.relu(self.fc(x)))
 
 
 class MoELayer(nn.Module):
-    def __init__(self, cfg: MoEConfig):
+    def __init__(self, cfg: MoEConfig, quantize: bool = False):
         super().__init__()
         self.cfg = cfg
+        self.quantize = quantize
+        _linear = FakeQuantLinear if quantize else nn.Linear
         self.router = nn.Linear(cfg.dim, cfg.n_experts, bias=False)
-        self.experts = nn.ModuleList([_Expert(cfg.dim, cfg.expert_hidden) for _ in range(cfg.n_experts)])
-        self.shared = nn.ModuleList([_Expert(cfg.dim, cfg.expert_hidden) for _ in range(cfg.shared_experts)])
+        self.experts = nn.ModuleList([_Expert(cfg.dim, cfg.expert_hidden, quantize) for _ in range(cfg.n_experts)])
+        self.shared = nn.ModuleList([_Expert(cfg.dim, cfg.expert_hidden, quantize) for _ in range(cfg.shared_experts)])
 
     def forward(self, x: torch.Tensor, router_bias: Optional[torch.Tensor] = None):
         b, t, d = x.shape

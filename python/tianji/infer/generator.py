@@ -90,9 +90,10 @@ class Generator:
         self._engine = None  # set by StateAwareGenerator
 
     def _ensure_buf(self, n: int) -> torch.Tensor:
-        if self._buf is None or n > self._buf.shape[1]:
+        needed = n + self.cfg.max_tokens + 1
+        if self._buf is None or needed > self._buf.shape[1]:
             self._buf = torch.zeros(
-                1, n + self.cfg.max_tokens, dtype=torch.long, device=self.device)
+                1, needed, dtype=torch.long, device=self.device)
         return self._buf
 
     def _next_token(self, logits: torch.Tensor) -> int:
@@ -107,9 +108,10 @@ class Generator:
         self._mamba_state: Tuple[torch.Tensor, ...] | None = None
 
     def _ensure_buf(self, n: int) -> torch.Tensor:
-        if self._buf is None or n > self._buf.shape[1]:
+        needed = n + self.cfg.max_tokens + 1
+        if self._buf is None or needed > self._buf.shape[1]:
             self._buf = torch.zeros(
-                1, n + self.cfg.max_tokens, dtype=torch.long, device=self.device)
+                1, needed, dtype=torch.long, device=self.device)
         return self._buf
 
     def _next_token(self, logits: torch.Tensor) -> int:

@@ -272,11 +272,6 @@ class QATLoop:
         loss = ce + kd_term + 0.01 * aux
         if self._ewc is not None and self._ewc_lambda > 0:
             loss = loss + self._ewc.penalty(self.model, self._ewc_lambda)
-        # DER++ replay loss (stored logits + CE)
-        if len(self.replay) >= 4:
-            replay_loss = self.replay.derpp_loss(self.model, n=4)
-            if replay_loss > 0:
-                loss = loss + 0.1 * replay_loss
         if self._scaler is not None:
             self._scaler.scale(loss).backward()
             self._scaler.step(self.opt)

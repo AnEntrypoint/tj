@@ -273,11 +273,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--steps", type=int, default=20)
     ap.add_argument("--batch", type=int, default=64)
-    ap.add_argument("--dim", type=int, default=128,
-                    help="model dimension (128 for quality, 64 for speed, 16 for test)")
+    ap.add_argument("--dim", type=int, default=256,
+                    help="model dimension (256 for quality, 128 for speed, 16 for test)")
     ap.add_argument("--ast-dim", type=int, default=8)
     ap.add_argument("--layers", type=int, default=27)
-    ap.add_argument("--seq-len", type=int, default=512,
+    ap.add_argument("--seq-len", type=int, default=1024,
                     help="token chunk size fed to the model per step; raise toward "
                          "200000 for full 200k context. The Engine chunks each frame "
                          "into --seq-len pieces, so a 200k-token session is processed in "

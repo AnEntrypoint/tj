@@ -84,7 +84,7 @@ def load_model(device: str = "cpu", ckpt_path: Optional[str] = None,
     arch = HybridConfig(dim=dim, n_layers=27)
     qat_cfg = QATConfig(device=device, lora_rank=4, vram_bytes=4 * 1024 ** 3)
     _loop = QATLoop(qat_cfg, arch, vocab_size=_vocab.size)
-    _generator = Generator(_loop, GenerateConfig(max_tokens=64, paged_kv_blocks=8))
+    _generator = Generator(_loop, GenerateConfig(max_tokens=128, paged_kv_blocks=8))
 
     if ckpt_path and os.path.exists(ckpt_path):
         n = _loop.load_checkpoint(ckpt_path)

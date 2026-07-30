@@ -34,7 +34,7 @@ class QATConfig:
     vram_bytes: int = 4 * 1024 ** 3
     lr: float = 1e-3
     kd_alpha: float = 0.5
-    seq_len: int = 512
+    seq_len: int = 1024
     precision: str = "fp16"     # "fp32", "fp16", "bf16"
     warmup_steps: int = 100     # linear LR warmup
     grad_clip: float = 1.0      # gradient clipping norm (0 = disabled)

@@ -41,16 +41,29 @@ class ReplayBuffer:
 
     def derpp_loss(self, model, n: int, T: float = 2.0) -> torch.Tensor:
         """DER++ replay loss: CE + KL on stored logits."""
-        batch = self.sample(n)
-        if batch is None or len(batch) < 3:
+        if len(self._buf) < n:
             return torch.tensor(0.0)
-        rx, ry, r_logits = batch
-        out, _, _ = model(rx)
-        ce = F.cross_entropy(out.view(-1, out.shape[-1]), ry.view(-1))
-        s = F.log_softmax(out / T, dim=-1)
-        t = F.softmax(r_logits / T, dim=-1)
-        kl = F.kl_div(s, t, reduction="batchmean") * (T * T)
-        return ce + 0.5 * kl
+        n = min(n, len(self._buf))
+        idx = torch.randperm(len(self._buf))[:n].tolist()
+        total_loss = torch.tensor(0.0)
+        count = 0
+        for i in idx:
+            item = self._buf[i]
+            rx = item[0].unsqueeze(0)  # (1, L)
+            ry = item[1].unsqueeze(0)
+            out, _, _ = model(rx)
+            L = min(out.shape[1], ry.shape[1])
+            ce = F.cross_entropy(out[:, :L].reshape(-1, out.shape[-1]), ry[:, :L].reshape(-1))
+            if len(item) > 2:
+                r_logits = item[2].unsqueeze(0)
+                s = F.log_softmax(out[:, :L] / T, dim=-1)
+                t = F.softmax(r_logits[:, :L] / T, dim=-1)
+                kl = F.kl_div(s, t, reduction="batchmean") * (T * T)
+                total_loss = total_loss + ce + 0.5 * kl
+            else:
+                total_loss = total_loss + ce
+            count += 1
+        return total_loss / max(1, count)
 
     def __len__(self) -> int:
         return len(self._buf)

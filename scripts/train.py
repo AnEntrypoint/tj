@@ -403,7 +403,8 @@ def main():
             seen.add((sid, int(ts)))
         ck = torch.load(state_path, map_location="cpu", weights_only=False)
         vocab = ck["vocab"]
-        arch = HybridConfig(dim=args.dim, n_layers=args.layers)
+        arch = HybridConfig(dim=args.dim, n_layers=args.layers, n_experts=8, n_active=2,
+                            d_inner=args.dim*2, expert_hidden=args.dim*2, shared_experts=2)
         qat_cfg = QATConfig(device=device, lora_rank=4, vram_bytes=4 * 1024 ** 3,
                             seq_len=args.seq_len, precision=args.precision)
         eng_cfg = EngineConfig(device=device, seq_len=args.seq_len, batch_size=1)
@@ -416,7 +417,8 @@ def main():
         seed_rows, _ = _collect_ccsniff_rows(args.since, min(args.limit, 256), seen, args.project)
         seen.clear()  # seed rows are for vocab only; let the loop train them too
         vocab = _seed_vocab(seed_rows, args.dim, args.ast_dim)
-        arch = HybridConfig(dim=args.dim, n_layers=args.layers)
+        arch = HybridConfig(dim=args.dim, n_layers=args.layers, n_experts=8, n_active=2,
+                            d_inner=args.dim*2, expert_hidden=args.dim*2, shared_experts=2)
         qat_cfg = QATConfig(device=device, lora_rank=4, vram_bytes=4 * 1024 ** 3,
                             seq_len=args.seq_len, precision=args.precision)
         eng_cfg = EngineConfig(device=device, seq_len=args.seq_len, batch_size=1)

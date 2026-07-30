@@ -58,7 +58,6 @@ _NEGATIVE_CORPUS = [
     "x = [1, 2, 3]\ny = [4, 5, 6]\nz = [a + b for a, b in zip(x, y)]",
     "def foo(a, b, c=0, *args, **kwargs):\n    return a + b + c",
     "import json\nimport re\nimport time\nfrom pathlib import Path",
-    # Non-agent text
     "The quick brown fox jumps over the lazy dog",
     "Lorem ipsum dolor sit amet consectetur adipiscing elit",
     "def test_addition():\n    assert 1 + 1 == 2\n    assert 2 + 2 == 4",
@@ -67,6 +66,15 @@ _NEGATIVE_CORPUS = [
     "class Singleton:\n    _instance = None\n    def __new__(cls):\n        if cls._instance is None:\n            cls._instance = super().__new__(cls)\n        return cls._instance",
     "def memoize(fn):\n    cache = {}\n    def wrapper(*args):\n        if args not in cache:\n            cache[args] = fn(*args)\n        return cache[args]\n    return wrapper",
     "def quicksort(arr):\n    if len(arr) <= 1:\n        return arr\n    pivot = arr[0]\n    left = [x for x in arr[1:] if x <= pivot]\n    right = [x for x in arr[1:] if x > pivot]\n    return quicksort(left) + [pivot] + quicksort(right)",
+    # More diverse code patterns
+    "import asyncio\n\nasync def fetch(url):\n    async with aiohttp.ClientSession() as s:\n        async with s.get(url) as r:\n            return await r.text()",
+    "from dataclasses import dataclass\nfrom typing import Optional, List\n\n@dataclass\nclass Config:\n    name: str\n    values: List[int]\n    enabled: bool = True",
+    "def retry(max_attempts=3, delay=1.0):\n    def decorator(fn):\n        def wrapper(*a, **kw):\n            for i in range(max_attempts):\n                try:\n                    return fn(*a, **kw)\n                except Exception:\n                    if i == max_attempts - 1:\n                        raise\n                    time.sleep(delay)\n        return wrapper\n    return decorator",
+    "import threading\n\nclass ThreadPool:\n    def __init__(self, n):\n        self.n = n\n        self.queue = []\n        self.lock = threading.Lock()\n    def submit(self, fn, *args):\n        with self.lock:\n            self.queue.append((fn, args))",
+    "def parse_jsonl(path):\n    results = []\n    with open(path, 'r', encoding='utf-8') as f:\n        for line in f:\n            line = line.strip()\n            if line:\n                results.append(json.loads(line))\n    return results",
+    "import hashlib\n\ndef hash_file(path, algo='sha256'):\n    h = hashlib.new(algo)\n    with open(path, 'rb') as f:\n        for chunk in iter(lambda: f.read(8192), b''):\n            h.update(chunk)\n    return h.hexdigest()",
+    "def flatten(nested):\n    for item in nested:\n        if isinstance(item, (list, tuple)):\n            yield from flatten(item)\n        else:\n            yield item",
+    "import sqlite3\n\ndef query_db(path, sql, params=()):\n    with sqlite3.connect(path) as conn:\n        conn.row_factory = sqlite3.Row\n        return [dict(row) for row in conn.execute(sql, params)]",
 ]
 
 _CCSNIIF_BIN = os.environ.get("CCSNIIF_BIN", "npx.cmd" if os.name == "nt" else "npx")
@@ -273,8 +281,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--steps", type=int, default=20)
     ap.add_argument("--batch", type=int, default=64)
-    ap.add_argument("--dim", type=int, default=256,
-                    help="model dimension (256 for quality, 128 for speed, 16 for test)")
+    ap.add_argument("--dim", type=int, default=768,
+                    help="model dimension (768 optimal for 4GB, 512 safe, 256 speed)")
     ap.add_argument("--ast-dim", type=int, default=8)
     ap.add_argument("--layers", type=int, default=27)
     ap.add_argument("--seq-len", type=int, default=1024,

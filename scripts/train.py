@@ -140,6 +140,19 @@ def _build_negative_corpus() -> list[str]:
 
 _NEGATIVE_CORPUS = _build_negative_corpus()
 
+
+def _load_hf_neg_cache() -> list[str]:
+    """Load cached HF negative samples from disk."""
+    import json as _json
+    cache_path = os.path.join(os.path.dirname(__file__), '..', '.hf_neg_cache', 'neg_samples.json')
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, encoding='utf-8') as f:
+                return _json.load(f)
+        except Exception:
+            pass
+    return []
+
 _CCSNIIF_BIN = os.environ.get("CCSNIIF_BIN", "npx.cmd" if os.name == "nt" else "npx")
 
 # Wall-clock time (seconds) of the most recent ccsniff fetch. Used to make
@@ -427,7 +440,10 @@ def main():
 
     # ── Negative eval: HF datasets or inline corpus ─────────────────
     hf_texts = None
-    neg_texts = list(_NEGATIVE_CORPUS)  # always available inline
+    hf_cached = _load_hf_neg_cache()
+    neg_texts = list(_NEGATIVE_CORPUS)
+    if hf_cached:
+        neg_texts.extend(hf_cached)
     if args.hf_dataset and _HF_OK:
         try:
             cfg = _known_dataset(args.hf_dataset)
@@ -440,7 +456,7 @@ def main():
         except Exception as e:
             print(f"[train] HF dataset unavailable: {e}", file=sys.stderr)
     if hf_texts is None:
-        print(f"[train] using inline negative eval corpus ({len(neg_texts)} samples)")
+        print(f"[train] using {len(neg_texts)} negative samples ({len(_NEGATIVE_CORPUS)} inline + {len(hf_cached)} HF cached)")
 
     losses = []
     acc_correct = 0

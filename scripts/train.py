@@ -362,7 +362,7 @@ def main():
             cfg = _known_dataset(args.hf_dataset)
             hf_texts = iter_hf_texts(
                 dataset=cfg.path, split=args.hf_split or cfg.split,
-                streaming=True, max_samples=args.hf_max_samples,
+                streaming=False, max_samples=args.hf_max_samples or 1000,
                 text_field=cfg.text_field,
             )
             print(f"[train] HF negative eval: {args.hf_dataset} ({cfg.path})")

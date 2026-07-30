@@ -70,14 +70,14 @@ def iter_hf_texts(
 ) -> Iterator[str]:
     """Iterate over text samples from a HuggingFace dataset.
 
-    Yields one text string per sample. The dataset is streamed by default
-    to avoid loading the entire corpus into memory.
+    Yields one text string per sample. Uses non-streaming mode by default
+    (streaming segfaults on Windows with some datasets).
 
     Args:
         dataset: HF dataset path or known dataset name.
-        split: Dataset split name.
+        split: Dataset split name (can include slice like 'train[:100]').
         name: Subset/config name.
-        streaming: Stream the dataset (recommended for large datasets).
+        streaming: Stream the dataset (may crash on Windows).
         max_samples: Stop after this many samples (0 = unlimited).
         text_field: Dataset field containing the text.
         filter_lang: Only include samples matching this language.
@@ -86,6 +86,9 @@ def iter_hf_texts(
         Text strings from the dataset.
     """
     _load = _import_datasets()
+    # Non-streaming is safer on Windows; use split slice for small fetches.
+    if max_samples > 0 and not streaming:
+        split = f"{split}[:{max_samples}]"
     kwargs = {"path": dataset, "split": split, "streaming": streaming}
     if name:
         kwargs["name"] = name

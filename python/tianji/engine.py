@@ -92,7 +92,9 @@ class Engine:
             e = min(s + L, ids.shape[1])
             with torch.no_grad():
                 h = self.qat.hidden(ids[:, s:e])
-                pooled = h.mean(dim=1)
+                # CL4D (AAAI 2026): last-token pooling is better than mean
+                # for decoder-only models — captures causal context.
+                pooled = h[:, -1]
         return self.state_proj(pooled)
 
     def step_frame(self, frame: Frame) -> StepResult:

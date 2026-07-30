@@ -47,15 +47,16 @@ class ReplayBuffer:
         idx = torch.randperm(len(self._buf))[:n].tolist()
         total_loss = torch.tensor(0.0)
         count = 0
+        device = next(model.parameters()).device
         for i in idx:
             item = self._buf[i]
-            rx = item[0].unsqueeze(0)  # (1, L)
-            ry = item[1].unsqueeze(0)
+            rx = item[0].to(device).unsqueeze(0)
+            ry = item[1].to(device).unsqueeze(0)
             out, _, _ = model(rx)
             L = min(out.shape[1], ry.shape[1])
             ce = F.cross_entropy(out[:, :L].reshape(-1, out.shape[-1]), ry[:, :L].reshape(-1))
             if len(item) > 2:
-                r_logits = item[2].unsqueeze(0)
+                r_logits = item[2].to(device).unsqueeze(0)
                 s = F.log_softmax(out[:, :L] / T, dim=-1)
                 t = F.softmax(r_logits[:, :L] / T, dim=-1)
                 kl = F.kl_div(s, t, reduction="batchmean") * (T * T)

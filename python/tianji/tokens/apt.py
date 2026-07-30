@@ -16,6 +16,9 @@ SPECIAL_TAGS = [
     "<system>", "</system>",
     "<cot>", "</cot>",
     "<diff>", "</diff>",
+    # Decision Transformer: return-conditioned generation tokens.
+    # High RTG biases model toward good agent behavior during inference.
+    "<rtg_high>", "<rtg_low>",
 ]
 
 SPECIAL_IDS = {tag: i for i, tag in enumerate(SPECIAL_TAGS)}

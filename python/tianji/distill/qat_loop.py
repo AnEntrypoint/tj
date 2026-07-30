@@ -21,7 +21,7 @@ except Exception:
 from ..arch.hybrid import HybridStack, HybridConfig
 from .lora import wrap_linear_with_lora, LoRAConfig, save_lora_state, load_lora_state
 from .replay import ReplayBuffer
-from .kd import kd_loss, make_stub_teacher, StubTeacher
+from .kd import kd_loss, make_stub_teacher, StubTeacher, reverse_kd_loss, jsd_loss, topk_kd_loss
 from .router_alignment import RouterAlignment
 from .ewc import EWCState
 from ..caps import ResourceBudget
@@ -39,6 +39,7 @@ class QATConfig:
     warmup_steps: int = 100     # linear LR warmup
     grad_clip: float = 1.0      # gradient clipping norm (0 = disabled)
     lr_decay: float = 0.1       # cosine decay to this fraction of initial LR
+    kd_mode: str = "jsd"        # "forward", "reverse", "jsd", "topk"
 
 
 @dataclass
@@ -84,7 +85,15 @@ class QATLoop:
         self.opt = torch.optim.AdamW(
             [p for p in self.model.parameters() if p.requires_grad],
             lr=cfg.lr, capturable=(self.device.type == "cuda"))
-        self.kd_enabled = not isinstance(self.teacher, StubTeacher)
+        def _kd_loss(self, student_logits, teacher_logits):
+        """Compute KD loss using the configured mode."""
+        if self.cfg.kd_mode == "reverse":
+            return reverse_kd_loss(student_logits, teacher_logits, T=2.0)
+        elif self.cfg.kd_mode == "jsd":
+            return jsd_loss(student_logits, teacher_logits, T=2.0)
+        elif self.cfg.kd_mode == "topk":
+            return topk_kd_loss(student_logits, teacher_logits, T=2.0, top_k=40)
+        return kd_loss(student_logits, teacher_logits, T=2.0)
         self._step_count = 0
         self._lr_scheduler = None
         self._lr_warmed_up = False
@@ -256,11 +265,16 @@ class QATLoop:
         with torch.amp.autocast("cuda", enabled=self._amp_dtype is not None, dtype=self._amp_dtype):
             with torch.no_grad():
                 teacher_logits = self.teacher(input_ids)
-        kd = kd_loss(logits, teacher_logits.detach(), T=2.0)
+        kd = self._kd_loss(logits, teacher_logits.detach())
         kd_term = (self.kd_alpha if self.kd_enabled else 0.0) * kd
         loss = ce + kd_term + 0.01 * aux
         if self._ewc is not None and self._ewc_lambda > 0:
             loss = loss + self._ewc.penalty(self.model, self._ewc_lambda)
+        # DER++ replay loss (stored logits + CE)
+        if len(self.replay) >= 4:
+            replay_loss = self.replay.derpp_loss(self.model, n=4)
+            if replay_loss > 0:
+                loss = loss + 0.1 * replay_loss
         if self._scaler is not None:
             self._scaler.scale(loss).backward()
             self._scaler.step(self.opt)
@@ -312,7 +326,7 @@ class QATLoop:
         ce = (ce * m).sum() / m.sum().clamp(min=1)
         with torch.no_grad():
             teacher_logits = self.teacher(inp)
-        kd = kd_loss(logits, teacher_logits.detach(), T=2.0)
+        kd = self._kd_loss(logits, teacher_logits.detach())
         self._g_kd.copy_(kd.detach())
         self._g_aux.copy_(aux.detach())
         kd_term = (self.kd_alpha if self.kd_enabled else 0.0) * kd

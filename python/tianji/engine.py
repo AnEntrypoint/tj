@@ -75,6 +75,12 @@ class Engine:
     @staticmethod
     def _frame_text(frame: Frame) -> str:
         parts = []
+        # Decision Transformer: prepend high RTG token for positive
+        # (Claude Code) samples. This conditions the model on quality.
+        if frame.source in ("claude", "cursor"):
+            parts.append("<rtg_high>")
+        else:
+            parts.append("<rtg_low>")
         for ev in frame.events:
             if ev.text:
                 parts.append(ev.text)

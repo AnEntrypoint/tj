@@ -34,3 +34,4 @@ dist/
 python/_*.txt
 python/_t_*.py
 python/_t_*.txt
+.env

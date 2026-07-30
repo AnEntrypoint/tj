@@ -85,15 +85,7 @@ class QATLoop:
         self.opt = torch.optim.AdamW(
             [p for p in self.model.parameters() if p.requires_grad],
             lr=cfg.lr, capturable=(self.device.type == "cuda"))
-        def _kd_loss(self, student_logits, teacher_logits):
-        """Compute KD loss using the configured mode."""
-        if self.cfg.kd_mode == "reverse":
-            return reverse_kd_loss(student_logits, teacher_logits, T=2.0)
-        elif self.cfg.kd_mode == "jsd":
-            return jsd_loss(student_logits, teacher_logits, T=2.0)
-        elif self.cfg.kd_mode == "topk":
-            return topk_kd_loss(student_logits, teacher_logits, T=2.0, top_k=40)
-        return kd_loss(student_logits, teacher_logits, T=2.0)
+        self.kd_enabled = not isinstance(self.teacher, StubTeacher)
         self._step_count = 0
         self._lr_scheduler = None
         self._lr_warmed_up = False
@@ -179,6 +171,16 @@ class QATLoop:
                 print(
                     "[qat] no graph acceleration available, using eager mode",
                     file=sys.stderr, flush=True)
+
+    def _kd_loss(self, student_logits, teacher_logits):
+        """Compute KD loss using the configured mode."""
+        if self.cfg.kd_mode == "reverse":
+            return reverse_kd_loss(student_logits, teacher_logits, T=2.0)
+        elif self.cfg.kd_mode == "jsd":
+            return jsd_loss(student_logits, teacher_logits, T=2.0)
+        elif self.cfg.kd_mode == "topk":
+            return topk_kd_loss(student_logits, teacher_logits, T=2.0, top_k=40)
+        return kd_loss(student_logits, teacher_logits, T=2.0)
 
     def _vram(self) -> int:
         if self.device.type == "cuda":
